@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function email() { return request.auth.token.email.lower(); }
+    function hasEmail() { return signedIn() && request.auth.token.email != null && request.auth.token.email_verified == true; }
+    function isOwner() { return hasEmail() && email() == "kani190spy@gmail.com"; }
+    function isAdmin() { return isOwner() || (hasEmail() && exists(/databases/$(database)/documents/admins/$(email()))); }
+
+    function validResponse() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['name', 'role', 'roleOther', 'note', 'avail', 'updatedAt'])
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 80
+        && d.role in ['new', 'board', 'other']
+        && d.roleOther is string && d.roleOther.size() <= 80
+        && d.note is string && d.note.size() <= 1000
+        && d.avail is map;
+    }
+
+    // Meetings and which one is shown: anyone can read, only admins change
+    match /events/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Each person writes only their own response; only admins read everyone's
+    match /responses/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow create, update: if signedIn() && request.auth.uid == uid && validResponse();
+      allow delete: if isAdmin();
+    }
+
+    // Admin list: admins can check it, only the owner changes it
+    match /admins/{adminEmail} {
+      allow read: if isAdmin() || (hasEmail() && email() == adminEmail);
+      allow write: if isOwner();
+    }
+  }
+}
