@@ -41,12 +41,13 @@ const nice = s => { const d = parseD(s); return `${DOW[d.getDay()]}, ${MON[d.get
 const niceL = s => { const d = parseD(s); return `${DOWL[d.getDay()]}, ${MONL[d.getMonth()]} ${d.getDate()}`; };
 const tl = min => { let h = Math.floor(min / 60); const m = min % 60, ap = h >= 12 && h < 24 ? "pm" : "am"; h = h % 12 || 12; return m ? `${h}:${String(m).padStart(2, "0")} ${ap}` : `${h} ${ap}`; };
 const slotsOf = ev => { const o = []; for (let t = ev.dayStart * 60; t < ev.dayEnd * 60; t += SLOT) o.push(t); return o; };
-const daysOf = ev => { const o = []; for (let d = parseD(ev.start); d <= parseD(ev.end); d.setDate(d.getDate() + 1)) o.push(fmtD(d)); return o; };
+const today = () => fmtD(new Date());
+// Meetings are open-ended: any day from today on (older meetings may still carry a start/end)
+const dayOk = (ev, key) => key >= today() && (!ev.start || key >= ev.start) && (!ev.end || key <= ev.end);
 const hours = n => { const h = n * SLOT / 60; return `${h} ${h === 1 ? "hour" : "hours"}`; };
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), 3200); }
 const ROLES = [["new", "New to BAMP"], ["board", "BAMP board"], ["other", "Other"]];
 const roleText = r => r?.role === "other" ? (r.roleOther?.trim() ? `Other: ${r.roleOther.trim()}` : "Other") : (ROLES.find(x => x[0] === r?.role)?.[1] || "No group picked");
-const groupLabel = g => ({ Interested: "Interested in BAMP", Joint: "BAMP + BAPA" }[g] || g);
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 
 // ---------- shared state ----------
@@ -54,9 +55,9 @@ const S = {
   user: null, isAdmin: false, isOwner: false, adminChecked: false,
   events: {}, settings: {}, responses: {}, admins: [],
   mine: null, evId: null, dirty: false, saving: false, savedOnce: false,
-  aTab: "results", aEv: null, roleFilter: "", cell: null,
+  aTab: "results", aEv: null, roleFilter: "", cell: null, monthOff: 0, showPast: false,
 };
-function generalEvent() { const a = new Date(), b = new Date(); b.setDate(b.getDate() + 41); return { title: "Upcoming BAMP meetings", group: "BAMP", start: fmtD(a), end: fmtD(b), dayStart: 8, dayEnd: 21, tz: "Eastern Time", note: "" }; }
+function generalEvent() { return { title: "Upcoming BAMP meetings", dayStart: 8, dayEnd: 21, tz: "Eastern Time", note: "" }; }
 const evById = id => id === "general" ? generalEvent() : S.events[id];
 function currentId() {
   if (S.settings.current && S.events[S.settings.current]) return S.settings.current;
@@ -144,14 +145,13 @@ function renderHome(app) {
   if (!S.mine) { app.append(el("p", { class: "loading" }, "Loading…")); return; }
   const id = currentId(), ev = evById(id); S.evId = id;
   const mine = S.mine; const days = (mine.avail[id] ||= {});
-  const inRange = new Set(daysOf(ev));
-  const picked = Object.keys(days).filter(d => inRange.has(d)).sort();
+  const picked = Object.keys(days).filter(d => dayOk(ev, d)).sort();
   const change = () => { S.dirty = true; render(); };
 
   app.append(el("p", { class: "welcome" }, "Welcome to ", el("b", {}, "BAMP Sastanak"), ", please pick the days you can meet, set hours of availability and we will try to match the best dates."));
   app.append(el("div", { class: "card" },
     el("h2", { style: "font-size:22px" }, ev.title),
-    el("p", { class: "hint" }, `${niceL(ev.start)} to ${niceL(ev.end)}. All times are ${ev.tz || "Eastern Time"}.${ev.note ? " " + ev.note : ""}`)));
+    el("p", { class: "hint" }, `Pick any upcoming days that work for you. All times are ${ev.tz || "Eastern Time"}.${ev.note ? " " + ev.note : ""}`)));
 
   if (S.justSaved) {
     app.append(el("div", { class: "thanks", role: "status" },
@@ -175,20 +175,25 @@ function renderHome(app) {
 
   // Step 3: days
   const months = el("div", { class: "months" });
-  const s = parseD(ev.start), e = parseD(ev.end);
-  for (let m = new Date(s.getFullYear(), s.getMonth(), 1); m <= e; m.setMonth(m.getMonth() + 1)) {
+  const now = new Date();
+  for (let k = 0; k < 2; k++) {
+    const m = new Date(now.getFullYear(), now.getMonth() + S.monthOff + k, 1);
     const g = el("div", { class: "g7" }, DOW.map(d => el("div", { class: "dow", "aria-hidden": "true" }, d.slice(0, 2))));
     for (let i = 0; i < m.getDay(); i++) g.append(el("div"));
     const last = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
     for (let d = 1; d <= last; d++) {
-      const key = fmtD(new Date(m.getFullYear(), m.getMonth(), d)), ok = inRange.has(key), on = ok && key in days;
+      const key = fmtD(new Date(m.getFullYear(), m.getMonth(), d)), ok = dayOk(ev, key), on = ok && key in days;
       g.append(el("button", { type: "button", class: `day ${ok ? "in" : "out"} ${on ? "sel" : ""}`, disabled: !ok, "aria-pressed": ok ? String(on) : null, "aria-label": ok ? niceL(key) : null,
         onclick: () => { if (key in days) delete days[key]; else days[key] = []; change(); } }, String(d)));
     }
     months.append(el("div", { class: "month" }, el("h3", {}, `${MONL[m.getMonth()]} ${m.getFullYear()}`), g));
   }
   app.append(el("section", { class: "card" }, stepH(3, "Pick the days you could meet"),
-    el("p", { class: "hint" }, "Tap each day that might work. Tap it again to remove it."), months,
+    el("p", { class: "hint" }, "Tap each day that might work. Tap it again to remove it. Use the arrows to see later months."),
+    el("div", { class: "row", style: "justify-content:space-between" },
+      el("button", { type: "button", class: "btn ghost sm", disabled: S.monthOff <= 0, onclick: () => { S.monthOff--; render(); } }, "← Earlier months"),
+      el("button", { type: "button", class: "btn ghost sm", onclick: () => { S.monthOff++; render(); } }, "Later months →")),
+    months,
     picked.length ? el("p", { class: "sumline", style: "margin:0" }, `${picked.length} ${picked.length === 1 ? "day" : "days"} picked`) : null));
 
   // Step 4: hours per day
@@ -301,11 +306,12 @@ function adminResults(app) {
   const people = Object.entries(S.responses).filter(([, r]) => r.avail?.[evId] && Object.values(r.avail[evId]).some(a => a.length) && (!S.roleFilter || r.role === S.roleFilter));
   const total = people.length;
   const nameOf = id => (S.responses[id]?.name || "").trim() || "Unnamed";
+  card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aPast", checked: S.showPast, onchange: e => { S.showPast = e.target.checked; S.cell = null; render(); } }), "Include past dates"));
   if (!total) { app.append(el("div", { class: "empty" }, S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); return; }
 
   const map = {};
   for (const [id, r] of people) for (const [d, arr] of Object.entries(r.avail[evId])) for (const t of arr) ((map[d] ||= {})[t] ||= []).push(id);
-  const days = daysOf(ev).filter(d => map[d]);
+  const days = Object.keys(map).filter(d => S.showPast || d >= today()).sort();
   const slots = slotsOf(ev);
   const shade = n => n === 0 ? 0 : Math.max(1, Math.ceil(n / total * 4));
   const colors = ["--heat0", "--heat1", "--heat2", "--heat3", "--heat4"];
@@ -349,16 +355,12 @@ function adminResults(app) {
 }
 
 function adminMeetings(app) {
-  const t = new Date(); t.setDate(t.getDate() + 7); const t2 = new Date(t); t2.setDate(t2.getDate() + 13);
   const hourOpts = def => Array.from({ length: 18 }, (_, i) => i + 6).map(h => el("option", { value: h, selected: h === def }, tl(h * 60)));
   const f = el("form", { class: "card" },
     el("h2", { style: "font-size:22px" }, "New meeting"),
     el("div", { class: "form2" },
-      el("div", { class: "field full" }, el("label", { class: "lbl", for: "mTitle" }, "Meeting name"), el("input", { type: "text", id: "mTitle", required: true, maxlength: "100", placeholder: "BAMP winter general meeting" })),
-      el("div", { class: "field" }, el("label", { class: "lbl", for: "mGroup" }, "Who it’s for"), el("select", { id: "mGroup" }, ["BAMP", "BAPA", "Joint", "Interested"].map(g => el("option", { value: g }, groupLabel(g))))),
-      el("div", { class: "field" }, el("label", { class: "lbl", for: "mTz" }, "Time zone shown"), el("input", { type: "text", id: "mTz", value: "Eastern Time", maxlength: "40" })),
-      el("div", { class: "field" }, el("label", { class: "lbl", for: "mStart" }, "First possible day"), el("input", { type: "date", id: "mStart", required: true, value: fmtD(t) })),
-      el("div", { class: "field" }, el("label", { class: "lbl", for: "mEnd" }, "Last possible day"), el("input", { type: "date", id: "mEnd", required: true, value: fmtD(t2) })),
+      el("div", { class: "field full" }, el("label", { class: "lbl", for: "mTitle" }, "Meeting name"), el("input", { type: "text", id: "mTitle", required: true, maxlength: "100", placeholder: "What is it? e.g. BAPA health talk, board meeting" })),
+      el("div", { class: "field full" }, el("label", { class: "lbl", for: "mTz" }, "Time zone shown"), el("input", { type: "text", id: "mTz", value: "Eastern Time", maxlength: "40" })),
       el("div", { class: "field" }, el("label", { class: "lbl", for: "mFrom" }, "Earliest time"), el("select", { id: "mFrom" }, hourOpts(9))),
       el("div", { class: "field" }, el("label", { class: "lbl", for: "mTo" }, "Latest time"), el("select", { id: "mTo" }, hourOpts(21))),
       el("div", { class: "field full" }, el("label", { class: "lbl", for: "mNote" }, "Note for participants (optional)"), el("input", { type: "text", id: "mNote", maxlength: "200", placeholder: "Zoom or in person, about 1 hour" }))),
@@ -366,13 +368,11 @@ function adminMeetings(app) {
   f.addEventListener("submit", async e => {
     e.preventDefault();
     const v = id => $("#" + id).value;
-    const start = v("mStart"), end = v("mEnd"), from = +v("mFrom"), to = +v("mTo");
-    if (end < start) return toast("The last day must be on or after the first day.");
+    const from = +v("mFrom"), to = +v("mTo");
     if (to <= from) return toast("The latest time must be after the earliest time.");
-    if ((parseD(end) - parseD(start)) / 864e5 > 92) return toast("Keep it to 3 months or less.");
     const id = "m" + Date.now().toString(36);
     try {
-      await setDoc(doc(db, "events", id), { title: v("mTitle").trim(), group: v("mGroup"), tz: v("mTz").trim() || "Eastern Time", note: v("mNote").trim(), start, end, dayStart: from, dayEnd: to, createdAt: Date.now(), createdBy: S.user.email });
+      await setDoc(doc(db, "events", id), { title: v("mTitle").trim(), tz: v("mTz").trim() || "Eastern Time", note: v("mNote").trim(), dayStart: from, dayEnd: to, createdAt: Date.now(), createdBy: S.user.email });
       await setDoc(doc(db, "settings", "main"), { current: id }, { merge: true });
       S.aEv = id; S.aTab = "results"; toast("Meeting created and shown to participants"); render();
     } catch (err) { console.error(err); toast("Couldn’t create the meeting. Are you still signed in as an admin?"); }
@@ -383,7 +383,7 @@ function adminMeetings(app) {
   const cur = currentId();
   app.append(el("section", { class: "card" }, el("h2", { style: "font-size:22px" }, "All meetings"),
     evs.length ? el("div", { class: "list" }, evs.map(([id, ev]) => el("div", { class: "li" },
-      el("div", {}, ev.title, id === cur ? el("span", { class: "pill" }, "Shown") : null, el("small", {}, `${groupLabel(ev.group)} · ${nice(ev.start)} – ${nice(ev.end)} · ${tl(ev.dayStart * 60)}–${tl(ev.dayEnd * 60)}`)),
+      el("div", {}, ev.title, id === cur ? el("span", { class: "pill" }, "Shown") : null, el("small", {}, `${tl(ev.dayStart * 60)}–${tl(ev.dayEnd * 60)} each day${ev.createdAt ? ` · created ${new Date(ev.createdAt).toLocaleDateString()}` : ""}`)),
       el("div", { class: "row" },
         id !== cur ? el("button", { class: "btn gold sm", onclick: async () => { try { await setDoc(doc(db, "settings", "main"), { current: id }, { merge: true }); toast("Participants now see this meeting"); } catch { toast("Couldn’t change it. Try again."); } } }, "Show to participants") : null,
         confirmBtn("Delete", "Tap again to delete", async () => { await deleteDoc(doc(db, "events", id)); toast("Meeting deleted"); })))))
