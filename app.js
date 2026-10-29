@@ -104,7 +104,7 @@ async function loadMine() {
 onAuthStateChanged(auth, async user => {
   S.user = user; S.adminChecked = false; S.isAdmin = false; S.isOwner = false;
   if (!user) {
-    if (route() === "home") { try { await signInAnonymously(auth); } catch (e) { $("#app").replaceChildren(el("div", { class: "card" }, el("h2", {}, "We couldn’t start the page"), el("p", { class: "hint" }, "Please refresh. If it keeps happening, let the organizer know."))); } }
+    if (route() === "home") { try { await signInAnonymously(auth); } catch (e) { console.error(e); $("#app").replaceChildren(el("div", { class: "card" }, el("h2", {}, "We couldn’t start the page"), el("p", { class: "hint" }, "Please refresh. If it keeps happening, let the organizer know."), el("p", { class: "hint", style: "font-size:14px" }, `Error code: ${e?.code || e?.message || "unknown"}`))); } }
     else render();
     return;
   }
