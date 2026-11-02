@@ -55,14 +55,22 @@ const S = {
   user: null, isAdmin: false, isOwner: false, adminChecked: false,
   events: {}, settings: {}, responses: {}, admins: [],
   mine: null, evId: null, dirty: false, saving: false, savedOnce: false,
-  aTab: "results", aEv: null, roleFilter: "", cell: null, monthOff: 0, showPast: false,
+  aTab: "results", aEv: null, roleFilter: "", cell: null, monthOff: 0, showPast: false, pEv: null, newAud: "all",
 };
 function generalEvent() { return { title: "Upcoming BAMP meetings", dayStart: 8, dayEnd: 21, tz: "Eastern Time", note: "" }; }
 const evById = id => id === "general" ? generalEvent() : S.events[id];
-function currentId() {
+const byNewest = () => Object.entries(S.events).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
+// Before open/closed existed, only one meeting was shown. Meetings without an "open" setting keep that behavior.
+function legacyShownId() {
   if (S.settings.current && S.events[S.settings.current]) return S.settings.current;
-  const evs = Object.entries(S.events).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
-  return evs[0]?.[0] || "general";
+  return byNewest()[0]?.[0] || null;
+}
+const isOpen = (id, ev) => typeof ev.open === "boolean" ? ev.open : id === legacyShownId();
+const isBoardOnly = ev => ev.audience === "board";
+// Meetings this participant can sign up for, newest first
+function visibleMeetings(role) {
+  if (!Object.keys(S.events).length) return [["general", generalEvent()]];
+  return byNewest().filter(([id, ev]) => isOpen(id, ev) && (!isBoardOnly(ev) || role === "board"));
 }
 const route = () => location.hash === "#admin" ? "admin" : "home";
 
@@ -143,20 +151,19 @@ function renderHead() {
 function renderHome(app) {
   app.replaceChildren();
   if (!S.mine) { app.append(el("p", { class: "loading" }, "Loading…")); return; }
-  const id = currentId(), ev = evById(id); S.evId = id;
-  const mine = S.mine; const days = (mine.avail[id] ||= {});
-  const picked = Object.keys(days).filter(d => dayOk(ev, d)).sort();
+  const mine = S.mine;
   const change = () => { S.dirty = true; render(); };
+  const meetings = visibleMeetings(mine.role);
+  if (!meetings.some(([mid]) => mid === S.pEv)) S.pEv = meetings[0]?.[0] || null;
+  const id = S.pEv, ev = id ? evById(id) : null; S.evId = id;
+  const responded = mid => Object.values(mine.avail[mid] || {}).some(a => a.length);
 
   app.append(el("p", { class: "welcome" }, "Welcome to ", el("b", {}, "BAMP Sastanak"), ", please pick the days you can meet, set hours of availability and we will try to match the best dates."));
-  app.append(el("div", { class: "card" },
-    el("h2", { style: "font-size:22px" }, ev.title),
-    el("p", { class: "hint" }, `Pick any upcoming days that work for you. All times are ${ev.tz || "Eastern Time"}.${ev.note ? " " + ev.note : ""}`)));
 
   if (S.justSaved) {
     app.append(el("div", { class: "thanks", role: "status" },
       el("h2", {}, `Thank you${mine.name ? ", " + mine.name.split(" ")[0] : ""}!`),
-      el("p", { style: "margin:0" }, "Your availability is saved. If anything changes, come back to this same page on this device and update it."),
+      el("p", { style: "margin:0" }, meetings.length > 1 ? "Your availability is saved. You can also respond to the other meetings below. If anything changes, come back to this same page on this device and update it." : "Your availability is saved. If anything changes, come back to this same page on this device and update it."),
       el("div", {}, el("button", { class: "btn ghost sm", onclick: () => { S.justSaved = false; render(); } }, "Make changes"))));
   }
 
@@ -173,7 +180,23 @@ function renderHome(app) {
       ROLES.map(([v, l]) => el("button", { type: "button", class: "choice", role: "radio", "aria-checked": String(mine.role === v), onclick: () => { mine.role = v; change(); } }, l))),
     mine.role === "other" ? el("div", { class: "field" }, el("label", { class: "lbl", for: "fOther" }, "Tell us a little more (optional)"), otherIn) : null));
 
-  // Step 3: days
+  // Step 3: choose a meeting
+  const list3 = el("section", { class: "card" }, stepH(3, meetings.length > 1 ? "Choose a meeting" : "The meeting"));
+  if (!meetings.length) {
+    list3.append(el("p", { class: "hint" }, "No meetings are open for sign-up right now. Please check back soon."));
+    app.append(list3); renderSaveBar(); return;
+  }
+  if (meetings.length > 1) list3.append(el("p", { class: "hint" }, "Tap a meeting to add your availability. You can respond to as many as you like."));
+  list3.append(el("div", { class: "mlist" }, meetings.map(([mid, m]) => el("button", { type: "button", class: "mcard", "aria-pressed": String(mid === id),
+    onclick: () => { S.pEv = mid; S.monthOff = 0; render(); } },
+    el("span", { class: "mtitle" }, m.title, isBoardOnly(m) ? el("span", { class: "pill" }, "Board only") : null),
+    el("span", { class: "hint" }, `${tl(m.dayStart * 60)}–${tl(m.dayEnd * 60)}, ${m.tz || "Eastern Time"}${m.note ? " · " + m.note : ""}`),
+    responded(mid) ? el("span", { class: "done" }, "✓ You’ve added times") : null))));
+  app.append(list3);
+  const days = (mine.avail[id] ||= {});
+  const picked = Object.keys(days).filter(d => dayOk(ev, d)).sort();
+
+  // Step 4: days
   const months = el("div", { class: "months" });
   const now = new Date();
   for (let k = 0; k < 2; k++) {
@@ -188,7 +211,7 @@ function renderHome(app) {
     }
     months.append(el("div", { class: "month" }, el("h3", {}, `${MONL[m.getMonth()]} ${m.getFullYear()}`), g));
   }
-  app.append(el("section", { class: "card" }, stepH(3, "Pick the days you could meet"),
+  app.append(el("section", { class: "card" }, stepH(4, meetings.length > 1 ? `Pick the days you could meet for “${ev.title}”` : "Pick the days you could meet"),
     el("p", { class: "hint" }, "Tap each day that might work. Tap it again to remove it. Use the arrows to see later months."),
     el("div", { class: "row", style: "justify-content:space-between" },
       el("button", { type: "button", class: "btn ghost sm", disabled: S.monthOff <= 0, onclick: () => { S.monthOff--; render(); } }, "← Earlier months"),
@@ -196,10 +219,10 @@ function renderHome(app) {
     months,
     picked.length ? el("p", { class: "sumline", style: "margin:0" }, `${picked.length} ${picked.length === 1 ? "day" : "days"} picked`) : null));
 
-  // Step 4: hours per day
+  // Step 5: hours per day
   const slots = slotsOf(ev);
   const quick = [["Morning", 8, 12], ["Afternoon", 12, 17], ["Evening", 17, 21], ["All day", 0, 24]];
-  const step4 = el("section", { class: "card" }, stepH(4, "Set your hours for each day"));
+  const step4 = el("section", { class: "card" }, stepH(5, "Set your hours for each day"));
   if (!picked.length) step4.append(el("p", { class: "hint" }, "Pick at least one day above, and it will show up here."));
   else {
     step4.append(el("p", { class: "hint" }, "Tap the times you’re free. Blue means free. Each day can have different hours."));
@@ -289,10 +312,11 @@ async function googleIn() {
 }
 
 function meetingPicker() {
-  const ids = [...Object.keys(S.events).sort((a, b) => (S.events[b].createdAt || 0) - (S.events[a].createdAt || 0)), "general"];
-  if (!S.aEv || !evById(S.aEv)) S.aEv = currentId();
+  const ids = [...byNewest().map(([id]) => id), "general"];
+  if (!S.aEv || !evById(S.aEv)) S.aEv = ids[0];
+  const tag = id => { if (id === "general") return " (general calendar)"; const ev = S.events[id]; return [isOpen(id, ev) ? "" : " (closed)", isBoardOnly(ev) ? " (board only)" : ""].join(""); };
   const sel = el("select", { id: "aEv", onchange: e => { S.aEv = e.target.value; S.cell = null; render(); } },
-    ids.map(id => el("option", { value: id, selected: id === S.aEv }, `${evById(id).title}${id === currentId() ? " (shown to participants)" : ""}`)));
+    ids.map(id => el("option", { value: id, selected: id === S.aEv }, `${evById(id).title}${tag(id)}`)));
   return el("div", { class: "field" }, el("label", { class: "lbl", for: "aEv" }, "Meeting"), sel);
 }
 
@@ -363,8 +387,9 @@ function adminMeetings(app) {
       el("div", { class: "field full" }, el("label", { class: "lbl", for: "mTz" }, "Time zone shown"), el("input", { type: "text", id: "mTz", value: "Eastern Time", maxlength: "40" })),
       el("div", { class: "field" }, el("label", { class: "lbl", for: "mFrom" }, "Earliest time"), el("select", { id: "mFrom" }, hourOpts(9))),
       el("div", { class: "field" }, el("label", { class: "lbl", for: "mTo" }, "Latest time"), el("select", { id: "mTo" }, hourOpts(21))),
-      el("div", { class: "field full" }, el("label", { class: "lbl", for: "mNote" }, "Note for participants (optional)"), el("input", { type: "text", id: "mNote", maxlength: "200", placeholder: "Zoom or in person, about 1 hour" }))),
-    el("div", { class: "row" }, el("button", { class: "btn" }, "Create meeting"), el("span", { class: "hint" }, "New meetings are shown to participants right away.")));
+      el("div", { class: "field full" }, el("label", { class: "lbl", for: "mNote" }, "Note for participants (optional)"), el("input", { type: "text", id: "mNote", maxlength: "200", placeholder: "Zoom or in person, about 1 hour" })),
+      el("div", { class: "field full" }, el("span", { class: "lbl" }, "Who can see it"), audienceToggle(S.newAud, v => { S.newAud = v; render(); }))),
+    el("div", { class: "row" }, el("button", { class: "btn" }, "Create meeting"), el("span", { class: "hint" }, "New meetings open for sign-up right away.")));
   f.addEventListener("submit", async e => {
     e.preventDefault();
     const v = id => $("#" + id).value;
@@ -372,22 +397,33 @@ function adminMeetings(app) {
     if (to <= from) return toast("The latest time must be after the earliest time.");
     const id = "m" + Date.now().toString(36);
     try {
-      await setDoc(doc(db, "events", id), { title: v("mTitle").trim(), tz: v("mTz").trim() || "Eastern Time", note: v("mNote").trim(), dayStart: from, dayEnd: to, createdAt: Date.now(), createdBy: S.user.email });
-      await setDoc(doc(db, "settings", "main"), { current: id }, { merge: true });
-      S.aEv = id; S.aTab = "results"; toast("Meeting created and shown to participants"); render();
+      await setDoc(doc(db, "events", id), { title: v("mTitle").trim(), tz: v("mTz").trim() || "Eastern Time", note: v("mNote").trim(), dayStart: from, dayEnd: to, open: true, audience: S.newAud, createdAt: Date.now(), createdBy: S.user.email });
+      S.aEv = id; S.aTab = "results"; S.newAud = "all"; toast("Meeting created and open for sign-up"); render();
     } catch (err) { console.error(err); toast("Couldn’t create the meeting. Are you still signed in as an admin?"); }
   });
   app.append(f);
 
-  const evs = Object.entries(S.events).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
-  const cur = currentId();
+  const evs = byNewest();
+  const patch = async (id, data, msg) => { try { await setDoc(doc(db, "events", id), data, { merge: true }); toast(msg); } catch (e) { console.error(e); toast("Couldn’t change it. Try again."); } };
   app.append(el("section", { class: "card" }, el("h2", { style: "font-size:22px" }, "All meetings"),
-    evs.length ? el("div", { class: "list" }, evs.map(([id, ev]) => el("div", { class: "li" },
-      el("div", {}, ev.title, id === cur ? el("span", { class: "pill" }, "Shown") : null, el("small", {}, `${tl(ev.dayStart * 60)}–${tl(ev.dayEnd * 60)} each day${ev.createdAt ? ` · created ${new Date(ev.createdAt).toLocaleDateString()}` : ""}`)),
-      el("div", { class: "row" },
-        id !== cur ? el("button", { class: "btn gold sm", onclick: async () => { try { await setDoc(doc(db, "settings", "main"), { current: id }, { merge: true }); toast("Participants now see this meeting"); } catch { toast("Couldn’t change it. Try again."); } } }, "Show to participants") : null,
-        confirmBtn("Delete", "Tap again to delete", async () => { await deleteDoc(doc(db, "events", id)); toast("Meeting deleted"); })))))
-      : el("p", { class: "hint" }, "No meetings yet. Until you create one, participants see a general calendar for the next 6 weeks.")));
+    el("p", { class: "hint" }, "Open meetings appear on the sign-up page. Board-only meetings appear only to people who pick “BAMP board”. Closing a meeting hides it from sign-up but keeps every response."),
+    evs.length ? el("div", { class: "list" }, evs.map(([id, ev]) => {
+      const open = isOpen(id, ev);
+      return el("div", { class: "li mrow" },
+        el("div", { style: "min-width:0" }, ev.title,
+          el("span", { class: `pill ${open ? "" : "off"}` }, open ? "Open" : "Closed"),
+          isBoardOnly(ev) ? el("span", { class: "pill blue" }, "Board only") : null,
+          el("small", {}, `${tl(ev.dayStart * 60)}–${tl(ev.dayEnd * 60)} each day${ev.createdAt ? ` · created ${new Date(ev.createdAt).toLocaleDateString()}` : ""}`)),
+        el("div", { class: "row" },
+          el("button", { class: `btn sm ${open ? "ghost" : "gold"}`, onclick: () => patch(id, { open: !open }, open ? "Closed. It’s hidden from sign-up." : "Opened for sign-up") }, open ? "Close sign-up" : "Open sign-up"),
+          audienceToggle(ev.audience === "board" ? "board" : "all", v => patch(id, { audience: v }, v === "board" ? "Now visible to BAMP board only" : "Now visible to everyone")),
+          confirmBtn("Delete", "Tap again to delete", async () => { await deleteDoc(doc(db, "events", id)); toast("Meeting deleted"); })));
+    }))
+      : el("p", { class: "hint" }, "No meetings yet. Until you create one, participants see a general calendar.")));
+}
+function audienceToggle(val, onPick) {
+  return el("div", { class: "choices", role: "radiogroup", "aria-label": "Who can see it" },
+    [["all", "Everyone"], ["board", "BAMP board only"]].map(([v, l]) => el("button", { type: "button", class: "choice small", role: "radio", "aria-checked": String(val === v), onclick: () => { if (val !== v) onPick(v); } }, l)));
 }
 
 function adminAdmins(app) {

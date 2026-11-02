@@ -122,6 +122,15 @@ textarea{resize:vertical;min-height:90px}
 .field{display:grid;gap:6px;min-width:0}
 .empty{border:2px dashed var(--line);border-radius:14px;padding:18px;color:var(--muted)}
 
+.mlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:10px}
+.mcard{text-align:left;display:grid;gap:4px;border:2px solid var(--line);background:var(--surface);border-radius:14px;padding:14px 16px;font-size:18px}
+.mcard[aria-pressed="true"]{border-color:var(--blue);box-shadow:inset 0 0 0 2px var(--blue);background:var(--cell)}
+.mtitle{font-weight:700}
+.done{color:var(--ok);font-weight:700;font-size:15px}
+.choice.small{padding:6px 12px;font-size:15px}
+.pill.off{background:var(--cell);color:var(--muted)}
+.pill.blue{background:var(--blue);color:#fff}
+.mrow{align-items:flex-start}
 .foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:15px;padding-block:0 110px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(96px + env(safe-area-inset-bottom,0px));background:var(--fg);color:#fff;padding:12px 18px;border-radius:12px;font-size:17px;z-index:40;max-width:calc(100% - 32px)}
 @media (prefers-reduced-motion:no-preference){.slot,.day,.choice,.hc{transition:background-color .12s}}
