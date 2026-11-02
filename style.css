@@ -131,6 +131,14 @@ textarea{resize:vertical;min-height:90px}
 .pill.off{background:var(--cell);color:var(--muted)}
 .pill.blue{background:var(--blue);color:#fff}
 .mrow{align-items:flex-start}
+.setcard{border-color:var(--gold);background:var(--gold-soft)}
+.setcard input,.setcard select{background:var(--surface)}
+.setlist{display:grid;gap:10px}
+.setitem{display:grid;gap:2px;background:var(--surface);border-radius:12px;padding:12px 14px}
+.when{font-weight:700;color:var(--blue-deep);font-size:19px}
+.pill.set{background:var(--ok);color:#fff}
+.mgrs{display:grid;gap:6px;margin-top:8px}
+.chip .x{border:0;background:transparent;margin-left:4px;font-weight:700;padding:0 2px;color:inherit}
 .foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:15px;padding-block:0 110px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(96px + env(safe-area-inset-bottom,0px));background:var(--fg);color:#fff;padding:12px 18px;border-radius:12px;font-size:17px;z-index:40;max-width:calc(100% - 32px)}
 @media (prefers-reduced-motion:no-preference){.slot,.day,.choice,.hc{transition:background-color .12s}}

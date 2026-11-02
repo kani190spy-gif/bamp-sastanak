@@ -67,6 +67,12 @@ function legacyShownId() {
 }
 const isOpen = (id, ev) => typeof ev.open === "boolean" ? ev.open : id === legacyShownId();
 const isBoardOnly = ev => ev.audience === "board";
+const myEmail = () => (S.user?.email || "").toLowerCase();
+// Who may change a meeting: the owner, the admin who created it, and admins they added as co-managers
+const canManage = ev => !!ev && (S.isOwner || (S.isAdmin && ((ev.createdBy || "").toLowerCase() === myEmail() || (ev.managers || []).includes(myEmail()))));
+const isSet = ev => !!ev?.confirmed?.date;
+const setText = ev => `${niceL(ev.confirmed.date)}, ${tl(ev.confirmed.start)}–${tl(ev.confirmed.end)} ${ev.tz || "Eastern Time"}`;
+const patchEv = async (id, data, msg) => { try { await setDoc(doc(db, "events", id), data, { merge: true }); toast(msg); return true; } catch (e) { console.error(e); toast("Couldn’t save that change. Only the meeting’s managers can change it."); return false; } };
 // Meetings this participant can sign up for, newest first
 function visibleMeetings(role) {
   if (!Object.keys(S.events).length) return [["general", generalEvent()]];
@@ -84,7 +90,7 @@ let adminUnsubs = [];
 function subscribeAdmin() {
   adminUnsubs.forEach(u => u()); adminUnsubs = [];
   adminUnsubs.push(onSnapshot(collection(db, "responses"), q => { S.responses = {}; q.forEach(d => (S.responses[d.id] = d.data())); render(); }, e => fail("responses", e)));
-  if (S.isOwner) adminUnsubs.push(onSnapshot(collection(db, "admins"), q => { S.admins = q.docs.map(d => d.id); render(); }, e => fail("admins", e)));
+  adminUnsubs.push(onSnapshot(collection(db, "admins"), q => { S.admins = q.docs.map(d => d.id); render(); }, e => fail("admins", e)));
 }
 function fail(what, e) { console.error(what, e); toast(`Couldn’t load ${what}. Check your connection and refresh.`); }
 
@@ -159,6 +165,15 @@ function renderHome(app) {
   const responded = mid => Object.values(mine.avail[mid] || {}).some(a => a.length);
 
   app.append(el("p", { class: "welcome" }, "Welcome to ", el("b", {}, "BAMP Sastanak"), ", please pick the days you can meet, set hours of availability and we will try to match the best dates."));
+
+  const confirmed = byNewest().filter(([, m]) => isSet(m) && m.confirmed.date >= today() && (!isBoardOnly(m) || mine.role === "board"))
+    .sort((a, b) => (a[1].confirmed.date + String(a[1].confirmed.start).padStart(4, "0")).localeCompare(b[1].confirmed.date + String(b[1].confirmed.start).padStart(4, "0")));
+  if (confirmed.length) app.append(el("section", { class: "card setcard" },
+    el("h2", { style: "font-size:22px" }, confirmed.length === 1 ? "Confirmed meeting" : "Confirmed meetings"),
+    el("div", { class: "setlist" }, confirmed.map(([, m]) => el("div", { class: "setitem" },
+      el("span", { class: "mtitle" }, m.title, isBoardOnly(m) ? el("span", { class: "pill blue" }, "Board") : null),
+      el("span", { class: "when" }, setText(m)),
+      m.confirmed.details ? el("span", { class: "hint", style: "overflow-wrap:anywhere" }, m.confirmed.details) : null)))));
 
   if (S.justSaved) {
     app.append(el("div", { class: "thanks", role: "status" },
@@ -331,7 +346,7 @@ function adminResults(app) {
   const total = people.length;
   const nameOf = id => (S.responses[id]?.name || "").trim() || "Unnamed";
   card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aPast", checked: S.showPast, onchange: e => { S.showPast = e.target.checked; S.cell = null; render(); } }), "Include past dates"));
-  if (!total) { app.append(el("div", { class: "empty" }, S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); return; }
+  if (!total) { app.append(el("div", { class: "empty" }, S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); const sc = setMeetingCard(evId, ev, [], {}, () => ""); if (sc) app.append(sc); return; }
 
   const map = {};
   for (const [id, r] of people) for (const [d, arr] of Object.entries(r.avail[evId])) for (const t of arr) ((map[d] ||= {})[t] ||= []).push(id);
@@ -346,7 +361,7 @@ function adminResults(app) {
     heat.append(el("div", { class: "hl" }, t % 60 === 0 ? tl(t) : ""));
     for (const d of days) {
       const n = (map[d]?.[t] || []).length, k = `${d}|${t}`;
-      heat.append(el("button", { class: `hc ${S.cell === k ? "active" : ""}`, style: `background:var(${colors[shade(n)]})`, "aria-label": `${nice(d)} ${tl(t)}: ${n} of ${total} free`, onclick: () => { S.cell = k; render(); } }));
+      heat.append(el("button", { class: `hc ${S.cell === k ? "active" : ""}`, style: `background:var(${colors[shade(n)]})`, "aria-label": `${nice(d)} ${tl(t)}: ${n} of ${total} free`, onclick: () => { S.cell = k; S.draft = { ev: evId, date: d, start: t, end: t + 60, details: S.draft?.details || "" }; render(); } }));
     }
   }
 
@@ -362,11 +377,11 @@ function adminResults(app) {
   for (const d of days) { let i = 0; while (i < slots.length) { const n = (map[d][slots[i]] || []).length; if (!n) { i++; continue; } let j = i; while (j + 1 < slots.length && (map[d][slots[j + 1]] || []).length === n) j++; runs.push({ d, a: slots[i], b: slots[j] + SLOT, n }); i = j + 1; } }
   runs.sort((x, y) => y.n - x.n || (y.b - y.a) - (x.b - x.a));
   const best = el("div", { class: "card" }, el("h3", {}, "Best times"),
-    el("div", { class: "best" }, runs.slice(0, 6).map(r => el("button", { onclick: () => { S.cell = `${r.d}|${r.a}`; render(); } }, el("span", {}, `${nice(r.d)} · ${tl(r.a)}–${tl(r.b)}`), el("b", {}, `${r.n} of ${total}`)))));
+    el("div", { class: "best" }, runs.slice(0, 6).map(r => el("button", { onclick: () => { S.cell = `${r.d}|${r.a}`; S.draft = { ev: evId, date: r.d, start: r.a, end: r.b, details: S.draft?.details || "" }; render(); } }, el("span", {}, `${nice(r.d)} · ${tl(r.a)}–${tl(r.b)}`), el("b", {}, `${r.n} of ${total}`)))));
 
   app.append(el("div", { class: "grid2" },
     el("div", { class: "card" }, el("div", { class: "legend" }, "Fewer", colors.map(c => el("i", { style: `background:var(${c})` })), "More people free"), el("div", { class: "heatwrap" }, heat)),
-    el("div", { style: "display:grid;gap:18px;align-content:start;min-width:0" }, who, best)));
+    el("div", { style: "display:grid;gap:18px;align-content:start;min-width:0" }, who, best, setMeetingCard(evId, ev, people, map, nameOf))));
 
   const noted = people.filter(([, r]) => (r.note || "").trim());
   if (noted.length) app.append(el("section", { class: "card" }, el("h3", {}, "Notes"), noted.map(([id, r]) => el("blockquote", { class: "note" }, r.note.trim(), el("cite", {}, `${nameOf(id)} · ${roleText(r)}`)))));
@@ -397,14 +412,14 @@ function adminMeetings(app) {
     if (to <= from) return toast("The latest time must be after the earliest time.");
     const id = "m" + Date.now().toString(36);
     try {
-      await setDoc(doc(db, "events", id), { title: v("mTitle").trim(), tz: v("mTz").trim() || "Eastern Time", note: v("mNote").trim(), dayStart: from, dayEnd: to, open: true, audience: S.newAud, createdAt: Date.now(), createdBy: S.user.email });
+      await setDoc(doc(db, "events", id), { title: v("mTitle").trim(), tz: v("mTz").trim() || "Eastern Time", note: v("mNote").trim(), dayStart: from, dayEnd: to, open: true, audience: S.newAud, managers: [], createdAt: Date.now(), createdBy: myEmail() });
       S.aEv = id; S.aTab = "results"; S.newAud = "all"; toast("Meeting created and open for sign-up"); render();
     } catch (err) { console.error(err); toast("Couldn’t create the meeting. Are you still signed in as an admin?"); }
   });
   app.append(f);
 
   const evs = byNewest();
-  const patch = async (id, data, msg) => { try { await setDoc(doc(db, "events", id), data, { merge: true }); toast(msg); } catch (e) { console.error(e); toast("Couldn’t change it. Try again."); } };
+  const patch = patchEv;
   app.append(el("section", { class: "card" }, el("h2", { style: "font-size:22px" }, "All meetings"),
     el("p", { class: "hint" }, "Open meetings appear on the sign-up page. Board-only meetings appear only to people who pick “BAMP board”. Closing a meeting hides it from sign-up but keeps every response."),
     evs.length ? el("div", { class: "list" }, evs.map(([id, ev]) => {
@@ -413,14 +428,76 @@ function adminMeetings(app) {
         el("div", { style: "min-width:0" }, ev.title,
           el("span", { class: `pill ${open ? "" : "off"}` }, open ? "Open" : "Closed"),
           isBoardOnly(ev) ? el("span", { class: "pill blue" }, "Board only") : null,
-          el("small", {}, `${tl(ev.dayStart * 60)}–${tl(ev.dayEnd * 60)} each day${ev.createdAt ? ` · created ${new Date(ev.createdAt).toLocaleDateString()}` : ""}`)),
+          isSet(ev) ? el("span", { class: "pill set" }, "Set") : null,
+          el("small", {}, isSet(ev) ? `Set for ${setText(ev)}` : `${tl(ev.dayStart * 60)}–${tl(ev.dayEnd * 60)} each day${ev.createdAt ? ` · created ${new Date(ev.createdAt).toLocaleDateString()}` : ""}`),
+          canManage(ev) ? managersBox(id, ev) : el("small", {}, `Managed by ${ev.createdBy || "the owner"}${(ev.managers || []).length ? " and co-managers" : ""}`)),
         el("div", { class: "row" },
-          el("button", { class: `btn sm ${open ? "ghost" : "gold"}`, onclick: () => patch(id, { open: !open }, open ? "Closed. It’s hidden from sign-up." : "Opened for sign-up") }, open ? "Close sign-up" : "Open sign-up"),
-          audienceToggle(ev.audience === "board" ? "board" : "all", v => patch(id, { audience: v }, v === "board" ? "Now visible to BAMP board only" : "Now visible to everyone")),
-          confirmBtn("Delete", "Tap again to delete", async () => { await deleteDoc(doc(db, "events", id)); toast("Meeting deleted"); })));
+          el("button", { class: "btn sm ghost", onclick: () => { S.aEv = id; S.aTab = "results"; S.cell = null; window.scrollTo(0, 0); render(); } }, isSet(ev) ? "Results" : "Results & set time"),
+          canManage(ev) ? [
+            el("button", { class: `btn sm ${open ? "ghost" : "gold"}`, onclick: () => patch(id, { open: !open }, open ? "Closed. It’s hidden from sign-up." : "Opened for sign-up") }, open ? "Close sign-up" : "Open sign-up"),
+            audienceToggle(ev.audience === "board" ? "board" : "all", v => patch(id, { audience: v }, v === "board" ? "Now visible to BAMP board only" : "Now visible to everyone")),
+            confirmBtn("Delete", "Tap again to delete", async () => { await deleteDoc(doc(db, "events", id)); toast("Meeting deleted"); })] : null));
     }))
       : el("p", { class: "hint" }, "No meetings yet. Until you create one, participants see a general calendar.")));
 }
+function setMeetingCard(evId, ev, people, map, nameOf) {
+  if (evId === "general") return null;
+  const card = el("div", { class: "card setcard" }, el("h3", {}, "Set the meeting"));
+  if (isSet(ev) && !(S.draft?.ev === evId && S.draft.editing)) {
+    card.append(el("p", { style: "margin:0;font-weight:700" }, `✓ ${setText(ev)}`),
+      ev.confirmed.details ? el("p", { class: "hint" }, ev.confirmed.details) : null,
+      el("p", { class: "hint" }, "Shown to participants under “Confirmed meetings”."));
+    if (canManage(ev)) card.append(el("div", { class: "row" },
+      el("button", { class: "btn ghost sm", onclick: () => { S.draft = { ...ev.confirmed, ev: evId, editing: true }; render(); } }, "Change"),
+      confirmBtn("Cancel meeting", "Tap again to cancel", () => patchEv(evId, { confirmed: null }, "Confirmation removed"))));
+    return card;
+  }
+  if (!canManage(ev)) { card.append(el("p", { class: "hint" }, `Only the people managing this meeting can set it. Created by ${ev.createdBy || "the owner"}.`)); return card; }
+  if (S.draft?.ev !== evId) S.draft = { ev: evId, date: "", start: ev.dayStart * 60, end: Math.min(ev.dayStart * 60 + 60, 24 * 60), details: "" };
+  const dr = S.draft;
+  const timeOpts = (sel, min) => Array.from({ length: 37 }, (_, i) => 360 + i * 30).filter(t => t >= min).map(t => el("option", { value: t, selected: t === sel }, tl(t)));
+  const dateIn = el("input", { type: "date", id: "cDate", value: dr.date, min: today(), onchange: e => { dr.date = e.target.value; render(); } });
+  const startIn = el("select", { id: "cStart", onchange: e => { dr.start = +e.target.value; if (dr.end <= dr.start) dr.end = dr.start + 60; render(); } }, timeOpts(dr.start, 0));
+  const endIn = el("select", { id: "cEnd", onchange: e => { dr.end = +e.target.value; render(); } }, timeOpts(dr.end, dr.start + 30));
+  const detIn = el("input", { type: "text", id: "cDet", maxlength: "300", placeholder: "Where or how: address, Zoom link…", value: dr.details || "" });
+  detIn.addEventListener("input", () => (dr.details = detIn.value));
+  card.append(el("p", { class: "hint" }, "Tap a square or a best time to fill this in, or pick a date yourself."),
+    el("div", { class: "form2" },
+      el("div", { class: "field full" }, el("label", { class: "lbl", for: "cDate" }, "Date"), dateIn),
+      el("div", { class: "field" }, el("label", { class: "lbl", for: "cStart" }, "Starts"), startIn),
+      el("div", { class: "field" }, el("label", { class: "lbl", for: "cEnd" }, "Ends"), endIn),
+      el("div", { class: "field full" }, el("label", { class: "lbl", for: "cDet" }, "Details (optional)"), detIn)));
+  if (dr.date && people.length) {
+    const need = []; for (let t = dr.start; t < dr.end; t += SLOT) need.push(t);
+    const ok = people.filter(([id]) => need.every(t => (map[dr.date]?.[t] || []).includes(id)));
+    card.append(el("p", { style: "margin:0;font-weight:700" }, `${ok.length} of ${people.length} are free for the whole time`),
+      ok.length ? el("div", { class: "chips" }, ok.map(([id]) => el("span", { class: "chip yes" }, nameOf(id)))) : null);
+  }
+  card.append(el("div", { class: "row" },
+    el("button", { class: "btn gold", disabled: !dr.date, onclick: async () => {
+      const done = await patchEv(evId, { confirmed: { date: dr.date, start: dr.start, end: dr.end, details: (dr.details || "").trim(), setBy: myEmail(), setAt: Date.now() }, open: false }, "Meeting set. Participants can see it now.");
+      if (done) { S.draft = null; render(); }
+    } }, "Confirm this meeting"),
+    dr.editing ? el("button", { class: "btn ghost sm", onclick: () => { S.draft = null; render(); } }, "Keep current time") : null),
+    el("p", { class: "hint" }, "Confirming closes sign-up for this meeting. You can reopen it from the Meetings tab."));
+  return card;
+}
+
+function managersBox(id, ev) {
+  const mgrs = ev.managers || [];
+  const creator = (ev.createdBy || "").toLowerCase();
+  const pool = [...new Set([OWNER_EMAIL, ...S.admins])].filter(e => e !== creator && !mgrs.includes(e));
+  const box = el("div", { class: "mgrs" }, el("span", { class: "hint" }, `Created by ${ev.createdBy || "the owner"}`));
+  box.append(el("div", { class: "chips" }, el("span", { class: "hint" }, "Co-managers:"),
+    mgrs.length ? mgrs.map(m => el("span", { class: "chip" }, m, el("button", { class: "x", "aria-label": `Remove ${m}`, onclick: () => patchEv(id, { managers: mgrs.filter(x => x !== m) }, "Co-manager removed") }, "×"))) : el("span", { class: "hint" }, "none")));
+  if (pool.length) {
+    const sel = el("select", { id: `mg-${id}`, style: "max-width:260px" }, el("option", { value: "" }, "Add an admin to help manage…"), pool.map(e => el("option", { value: e }, e)));
+    sel.addEventListener("change", () => { if (sel.value) patchEv(id, { managers: [...mgrs, sel.value] }, `${sel.value} can now manage this meeting`); });
+    box.append(sel);
+  }
+  return box;
+}
+
 function audienceToggle(val, onPick) {
   return el("div", { class: "choices", role: "radiogroup", "aria-label": "Who can see it" },
     [["all", "Everyone"], ["board", "BAMP board only"]].map(([v, l]) => el("button", { type: "button", class: "choice small", role: "radio", "aria-checked": String(val === v), onclick: () => { if (val !== v) onPick(v); } }, l)));

@@ -19,9 +19,14 @@ service cloud.firestore {
     }
 
     // Meetings and which one is shown: anyone can read, only admins change
+    // Meetings: anyone can read. Any admin can create one (as themselves);
+    // only the owner, its creator, or its co-managers can change or delete it.
     match /events/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow create: if isAdmin() && request.resource.data.createdBy == email();
+      allow update, delete: if isOwner() || (isAdmin() && (
+        resource.data.get('createdBy', '').lower() == email() ||
+        email() in resource.data.get('managers', [])));
     }
     match /settings/{id} {
       allow read: if true;
