@@ -67,7 +67,7 @@ function legacyShownId() {
 }
 // "Usual week": weekday keys "0" (Sun) … "6" (Sat), times in minutes, 8 am – 9 pm
 const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
-const WEEK_EV = { title: "Everyone’s usual week", dayStart: 8, dayEnd: 21, tz: "Eastern Time" };
+const WEEK_EV = { title: "Everyone’s weekly availability", dayStart: 8, dayEnd: 21, tz: "Eastern Time" };
 const BLOCKS = [["Morning", 8, 12], ["Afternoon", 12, 17], ["Evening", 17, 21]];
 const weeklyOf = r => r?.avail?.weekly || {};
 const hasWeekly = r => Object.values(weeklyOf(r)).some(a => a?.length);
@@ -209,11 +209,12 @@ function renderHome(app) {
   }
   if (!mine.work) { app.append(el("p", { class: "loading" }, "Loading meetings…")); renderSaveBar(); return; }
 
-  // Step 3: usual week
+  // Consistent weekly availability (shown after the meeting steps)
+  let stepNo = 3;
   const weekly = (mine.avail.weekly ||= {});
   const wSlots = slotsOf(WEEK_EV);
-  const wk = el("section", { class: "card" }, stepH(3, "Your usual week (optional)"),
-    el("p", { class: "hint" }, "When are you usually free? This helps us plan future meetings, even ones that aren’t posted yet. Tap a part of the day to mark it."));
+  const wk = el("section", { class: "card" },
+    el("p", { class: "hint" }, "If you have a consistent time that you’re available each week, mark it here. It helps us plan future meetings, even ones that aren’t posted yet. Tap a part of the day to mark it."));
   const wlist = el("div", { class: "weeklist" });
   for (const w of WEEK_ORDER) {
     const set = new Set(weekly[w] || []);
@@ -228,12 +229,11 @@ function renderHome(app) {
       S.weekOpen[w] ? el("div", { class: "slots" }, wSlots.map(t => el("button", { type: "button", class: "slot", "aria-pressed": String(set.has(t)), onclick: () => { set.has(t) ? set.delete(t) : set.add(t); commit(); } }, tl(t)))) : null));
   }
   wk.append(wlist);
-  app.append(wk);
 
   // Step 4: which meetings
-  const list4 = el("section", { class: "card" }, stepH(4, meetings.length > 1 ? "Which meetings could you come to?" : "The meeting"));
+  const list4 = el("section", { class: "card" }, stepH(stepNo++, meetings.length > 1 ? "Which meetings could you come to?" : "The meeting"));
   if (!meetings.length) {
-    list4.append(el("p", { class: "hint" }, "No meetings are open for sign-up right now. You can still fill in your usual week above and save."));
+    list4.append(el("p", { class: "hint" }, "No meetings are open for sign-up right now. You can still fill in your consistent weekly availability below and save."));
     app.append(list4);
   } else {
     if (meetings.length > 1) list4.append(el("p", { class: "hint" }, "Tick every meeting you could attend. The days and times you pick below count for all the ones you tick."));
@@ -248,7 +248,7 @@ function renderHome(app) {
 
     const chosen = meetings.filter(([mid]) => mine.picks.has(mid)).map(([, m]) => m);
     if (!chosen.length) {
-      app.append(el("section", { class: "card" }, stepH(5, "Pick your days and times"), el("p", { class: "hint" }, "Tick at least one meeting above to pick specific days.")));
+      app.append(el("section", { class: "card" }, stepH(stepNo++, "Pick your days and times"), el("p", { class: "hint" }, "Tick at least one meeting above to pick specific days.")));
     } else {
       const win = { dayStart: Math.min(...chosen.map(m => m.dayStart)), dayEnd: Math.max(...chosen.map(m => m.dayEnd)) };
       const slots = slotsOf(win);
@@ -274,7 +274,7 @@ function renderHome(app) {
         }
         months.append(el("div", { class: "month" }, el("h3", {}, `${MONL[m.getMonth()]} ${m.getFullYear()}`), g));
       }
-      app.append(el("section", { class: "card" }, stepH(5, "Pick the days you could meet"),
+      app.append(el("section", { class: "card" }, stepH(stepNo++, "Pick the days you could meet"),
         el("p", { class: "hint" }, "Tap each day that might work. Tap it again to remove it. Use the arrows to see later months."),
         el("div", { class: "row", style: "justify-content:space-between" },
           el("button", { type: "button", class: "btn ghost sm", disabled: S.monthOff <= 0, onclick: () => { S.monthOff--; render(); } }, "← Earlier months"),
@@ -284,10 +284,10 @@ function renderHome(app) {
 
       // Step 6: hours per day
       const quick = [...BLOCKS, ["All day", 0, 24]];
-      const step6 = el("section", { class: "card" }, stepH(6, "Set your hours for each day"));
+      const step6 = el("section", { class: "card" }, stepH(stepNo++, "Set your hours for each day"));
       if (!picked.length) step6.append(el("p", { class: "hint" }, "Pick at least one day above, and it will show up here."));
       else {
-        step6.append(el("p", { class: "hint" }, hasWeekly(mine) ? "We started each day with your usual week. Tap times to change them. Blue means free." : "Tap the times you’re free. Blue means free. Each day can have different hours."));
+        step6.append(el("p", { class: "hint" }, hasWeekly(mine) ? "We started each day with your weekly availability. Tap times to change them. Blue means free." : "Tap the times you’re free. Blue means free. Each day can have different hours."));
         const list = el("div", { class: "daylist" });
         picked.forEach((d, i) => {
           const set = new Set(days[d]);
@@ -306,6 +306,9 @@ function renderHome(app) {
       app.append(step6);
     }
   }
+
+  wk.prepend(stepH(stepNo++, "Consistent weekly availability (optional)"));
+  app.append(wk);
 
   // Note
   const noteIn = el("textarea", { id: "fNote", maxlength: "1000", rows: "3", placeholder: "Anything you’d like us to know: topics, questions, how you prefer to meet…" });
@@ -411,10 +414,10 @@ function adminResults(app) {
   const nameOf = id => (S.responses[id]?.name || "").trim() || "Unnamed";
   const isFree = (id, d, t) => weekIds.has(id) ? (weeklyOf(S.responses[id])[isWeek ? d.slice(1) : parseD(d).getDay()] || []).includes(t) : (S.responses[id]?.avail?.[evId]?.[d] || []).includes(t);
   if (!isWeek) {
-    card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aWeek", checked: S.inclWeekly, onchange: e => { S.inclWeekly = e.target.checked; S.cell = null; render(); } }), "Also count people’s usual week (for those who didn’t pick dates)"));
+    card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aWeek", checked: S.inclWeekly, onchange: e => { S.inclWeekly = e.target.checked; S.cell = null; render(); } }), "Also count people’s weekly availability (for those who didn’t pick dates)"));
     card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aPast", checked: S.showPast, onchange: e => { S.showPast = e.target.checked; S.cell = null; render(); } }), "Include past dates"));
-  } else card.append(el("p", { class: "hint" }, "Each person’s usual weekly availability, from the “Your usual week” step. Use it to pick good days before posting a meeting."));
-  if (!total) { app.append(el("div", { class: "empty" }, isWeek ? "No one has filled in their usual week yet." : S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); const sc = setMeetingCard(evId, ev, [], () => false, () => ""); if (sc) app.append(sc); return; }
+  } else card.append(el("p", { class: "hint" }, "Each person’s usual weekly availability, from the “Consistent weekly availability” step. Use it to pick good days before posting a meeting."));
+  if (!total) { app.append(el("div", { class: "empty" }, isWeek ? "No one has filled in their weekly availability yet." : S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); const sc = setMeetingCard(evId, ev, [], () => false, () => ""); if (sc) app.append(sc); return; }
 
   let days;
   if (isWeek) days = WEEK_ORDER.map(w => "w" + w);
@@ -448,7 +451,7 @@ function adminResults(app) {
   else {
     const [d, t] = S.cell.split("|"), ids = map[d]?.[+t] || [];
     who.append(el("h3", {}, `${dayName(d)}, ${tl(+t)}–${tl(+t + SLOT)}`), el("p", { style: "margin:0;font-weight:700" }, `${ids.length} of ${total} free`),
-      el("div", { class: "chips" }, people.map(([id, r]) => el("span", { class: `chip ${ids.includes(id) ? "yes" : "no"}`, title: roleText(r) }, nameOf(id), !isWeek && weekIds.has(id) ? " (usual week)" : ""))));
+      el("div", { class: "chips" }, people.map(([id, r]) => el("span", { class: `chip ${ids.includes(id) ? "yes" : "no"}`, title: roleText(r) }, nameOf(id), !isWeek && weekIds.has(id) ? " (weekly)" : ""))));
   }
 
   const runs = [];
@@ -464,10 +467,10 @@ function adminResults(app) {
   const noted = people.filter(([, r]) => (r.note || "").trim());
   if (noted.length) app.append(el("section", { class: "card" }, el("h3", {}, "Notes"), noted.map(([id, r]) => el("blockquote", { class: "note" }, r.note.trim(), el("cite", {}, `${nameOf(id)} · ${roleText(r)}`)))));
 
-  app.append(el("section", { class: "card" }, el("h3", {}, isWeek ? `People who gave a usual week (${total})` : `People counted (${total})`),
+  app.append(el("section", { class: "card" }, el("h3", {}, isWeek ? `People who gave weekly availability (${total})` : `People counted (${total})`),
     el("div", { class: "list" }, people.sort((a, b) => nameOf(a[0]).localeCompare(nameOf(b[0]))).map(([id, r]) => {
       const nd = weekIds.has(id) ? 0 : Object.values(r.avail[evId]).filter(a => a.length).length;
-      return el("div", { class: "li" }, el("div", {}, nameOf(id), el("small", {}, `${roleText(r)} · ${weekIds.has(id) ? "usual week" : `${nd} ${nd === 1 ? "day" : "days"}`}`)), confirmBtn("Remove", "Tap again to remove", async () => { await deleteDoc(doc(db, "responses", id)); toast("Response removed"); }));
+      return el("div", { class: "li" }, el("div", {}, nameOf(id), el("small", {}, `${roleText(r)} · ${weekIds.has(id) ? "weekly availability" : `${nd} ${nd === 1 ? "day" : "days"}`}`)), confirmBtn("Remove", "Tap again to remove", async () => { await deleteDoc(doc(db, "responses", id)); toast("Response removed"); }));
     }))));
 }
 
