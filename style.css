@@ -93,7 +93,7 @@ textarea{resize:vertical;min-height:90px}
 .tabs{display:flex;gap:6px;flex-wrap:wrap}
 .tab{border:2px solid var(--line);background:var(--surface);border-radius:999px;padding:8px 16px;font-weight:700;font-size:16px}
 .tab[aria-selected="true"]{background:var(--blue-deep);border-color:var(--blue-deep);color:#fff}
-.grid2{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:18px}
+.grid2{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:18px;align-items:start}
 @media (max-width:800px){.grid2{grid-template-columns:1fr}}
 .legend{display:flex;gap:6px;align-items:center;font-size:14px;color:var(--muted);flex-wrap:wrap}
 .legend i{width:20px;height:14px;border-radius:3px;display:inline-block}
@@ -139,6 +139,14 @@ textarea{resize:vertical;min-height:90px}
 .pill.set{background:var(--ok);color:#fff}
 .mgrs{display:grid;gap:6px;margin-top:8px}
 .chip .x{border:0;background:transparent;margin-left:4px;font-weight:700;padding:0 2px;color:inherit}
+.weeklist{display:grid;gap:10px}
+.weekrow{display:grid;gap:8px;border:2px solid var(--line);border-radius:14px;padding:12px 14px}
+.wday{font-weight:700;font-size:19px}
+.block{border:2px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 16px;font-weight:700;font-size:17px}
+.block[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
+.block[aria-pressed="mixed"]{background:var(--heat1);border-color:var(--blue)}
+.tick{display:inline-grid;place-items:center;width:24px;height:24px;border:2px solid var(--line);border-radius:6px;margin-right:8px;vertical-align:-4px;font-size:15px;background:var(--surface)}
+.mcard[aria-checked="true"] .tick{background:var(--blue);border-color:var(--blue);color:#fff}
 .foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:15px;padding-block:0 110px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(96px + env(safe-area-inset-bottom,0px));background:var(--fg);color:#fff;padding:12px 18px;border-radius:12px;font-size:17px;z-index:40;max-width:calc(100% - 32px)}
 @media (prefers-reduced-motion:no-preference){.slot,.day,.choice,.hc{transition:background-color .12s}}

@@ -53,18 +53,24 @@ const store = { get(k) { try { return localStorage.getItem(k); } catch { return 
 // ---------- shared state ----------
 const S = {
   user: null, isAdmin: false, isOwner: false, adminChecked: false,
-  events: {}, settings: {}, responses: {}, admins: [],
+  events: {}, eventsLoaded: false, settings: {}, responses: {}, admins: [], weekOpen: {}, inclWeekly: true,
   mine: null, evId: null, dirty: false, saving: false, savedOnce: false,
   aTab: "results", aEv: null, roleFilter: "", cell: null, monthOff: 0, showPast: false, pEv: null, newAud: "all",
 };
 function generalEvent() { return { title: "Upcoming BAMP meetings", dayStart: 8, dayEnd: 21, tz: "Eastern Time", note: "" }; }
-const evById = id => id === "general" ? generalEvent() : S.events[id];
+const evById = id => id === "general" ? generalEvent() : id === "weekly" ? WEEK_EV : S.events[id];
 const byNewest = () => Object.entries(S.events).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
 // Before open/closed existed, only one meeting was shown. Meetings without an "open" setting keep that behavior.
 function legacyShownId() {
   if (S.settings.current && S.events[S.settings.current]) return S.settings.current;
   return byNewest()[0]?.[0] || null;
 }
+// "Usual week": weekday keys "0" (Sun) … "6" (Sat), times in minutes, 8 am – 9 pm
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const WEEK_EV = { title: "Everyone’s usual week", dayStart: 8, dayEnd: 21, tz: "Eastern Time" };
+const BLOCKS = [["Morning", 8, 12], ["Afternoon", 12, 17], ["Evening", 17, 21]];
+const weeklyOf = r => r?.avail?.weekly || {};
+const hasWeekly = r => Object.values(weeklyOf(r)).some(a => a?.length);
 const isOpen = (id, ev) => typeof ev.open === "boolean" ? ev.open : id === legacyShownId();
 const isBoardOnly = ev => ev.audience === "board";
 const myEmail = () => (S.user?.email || "").toLowerCase();
@@ -83,7 +89,7 @@ const route = () => location.hash === "#admin" ? "admin" : "home";
 // ---------- data subscriptions ----------
 let unsubs = [];
 function subscribePublic() {
-  unsubs.push(onSnapshot(collection(db, "events"), q => { S.events = {}; q.forEach(d => (S.events[d.id] = d.data())); render(); }, e => fail("meetings", e)));
+  unsubs.push(onSnapshot(collection(db, "events"), q => { S.events = {}; q.forEach(d => (S.events[d.id] = d.data())); S.eventsLoaded = true; render(); }, e => fail("meetings", e)));
   unsubs.push(onSnapshot(doc(db, "settings", "main"), s => { S.settings = s.exists() ? s.data() : {}; render(); }, e => fail("settings", e)));
 }
 let adminUnsubs = [];
@@ -108,7 +114,7 @@ async function loadMine() {
   try {
     const s = await getDoc(doc(db, "responses", uid));
     const d = s.exists() ? s.data() : {};
-    S.mine = { name: d.name || store.get("sastanak-name") || "", role: d.role || "", roleOther: d.roleOther || "", note: d.note || "", avail: d.avail || {} };
+    S.mine = { name: d.name || store.get("sastanak-name") || "", role: d.role || "", roleOther: d.roleOther || "", note: d.note || "", avail: d.avail || {}, work: null, picks: null };
     S.savedOnce = s.exists();
   } catch (e) {
     S.mine = { name: "", role: "", roleOther: "", note: "", avail: {} };
@@ -160,8 +166,6 @@ function renderHome(app) {
   const mine = S.mine;
   const change = () => { S.dirty = true; render(); };
   const meetings = visibleMeetings(mine.role);
-  if (!meetings.some(([mid]) => mid === S.pEv)) S.pEv = meetings[0]?.[0] || null;
-  const id = S.pEv, ev = id ? evById(id) : null; S.evId = id;
   const responded = mid => Object.values(mine.avail[mid] || {}).some(a => a.length);
 
   app.append(el("p", { class: "welcome" }, "Welcome to ", el("b", {}, "BAMP Sastanak"), ", please pick the days you can meet, set hours of availability and we will try to match the best dates."));
@@ -178,7 +182,7 @@ function renderHome(app) {
   if (S.justSaved) {
     app.append(el("div", { class: "thanks", role: "status" },
       el("h2", {}, `Thank you${mine.name ? ", " + mine.name.split(" ")[0] : ""}!`),
-      el("p", { style: "margin:0" }, meetings.length > 1 ? "Your availability is saved. You can also respond to the other meetings below. If anything changes, come back to this same page on this device and update it." : "Your availability is saved. If anything changes, come back to this same page on this device and update it."),
+      el("p", { style: "margin:0" }, "Your availability is saved. If anything changes, come back to this same page on this device and update it."),
       el("div", {}, el("button", { class: "btn ghost sm", onclick: () => { S.justSaved = false; render(); } }, "Make changes"))));
   }
 
@@ -195,68 +199,113 @@ function renderHome(app) {
       ROLES.map(([v, l]) => el("button", { type: "button", class: "choice", role: "radio", "aria-checked": String(mine.role === v), onclick: () => { mine.role = v; change(); } }, l))),
     mine.role === "other" ? el("div", { class: "field" }, el("label", { class: "lbl", for: "fOther" }, "Tell us a little more (optional)"), otherIn) : null));
 
-  // Step 3: choose a meeting
-  const list3 = el("section", { class: "card" }, stepH(3, meetings.length > 1 ? "Choose a meeting" : "The meeting"));
+  // Lazily set up the shared working calendar once meetings have loaded
+  if (!mine.work && S.eventsLoaded) {
+    const vis = meetings.map(([mid]) => mid);
+    mine.picks = new Set(vis.filter(responded));
+    if (vis.length === 1) mine.picks.add(vis[0]);
+    mine.work = {};
+    for (const mid of mine.picks) for (const [d, arr] of Object.entries(mine.avail[mid] || {})) mine.work[d] = [...new Set([...(mine.work[d] || []), ...arr])].sort((a, b) => a - b);
+  }
+  if (!mine.work) { app.append(el("p", { class: "loading" }, "Loading meetings…")); renderSaveBar(); return; }
+
+  // Step 3: usual week
+  const weekly = (mine.avail.weekly ||= {});
+  const wSlots = slotsOf(WEEK_EV);
+  const wk = el("section", { class: "card" }, stepH(3, "Your usual week (optional)"),
+    el("p", { class: "hint" }, "When are you usually free? This helps us plan future meetings, even ones that aren’t posted yet. Tap a part of the day to mark it."));
+  const wlist = el("div", { class: "weeklist" });
+  for (const w of WEEK_ORDER) {
+    const set = new Set(weekly[w] || []);
+    const commit = () => { weekly[w] = [...set].sort((a, b) => a - b); change(); };
+    const blockState = (a, b) => { const r = wSlots.filter(t => t >= a * 60 && t < b * 60); const n = r.filter(t => set.has(t)).length; return n === 0 ? "false" : n === r.length ? "true" : "mixed"; };
+    wlist.append(el("div", { class: "weekrow" },
+      el("span", { class: "wday" }, DOWL[w]),
+      el("div", { class: "quick" },
+        BLOCKS.map(([l, a, b]) => { const st = blockState(a, b); return el("button", { type: "button", class: "block", "aria-pressed": st,
+          onclick: () => { const r = wSlots.filter(t => t >= a * 60 && t < b * 60); r.forEach(t => st === "true" ? set.delete(t) : set.add(t)); commit(); } }, l, st === "mixed" ? " (some)" : ""); }),
+        el("button", { type: "button", class: "btn ghost sm", "aria-expanded": String(!!S.weekOpen[w]), onclick: () => { S.weekOpen[w] = !S.weekOpen[w]; render(); } }, S.weekOpen[w] ? "Hide exact times" : "Exact times")),
+      S.weekOpen[w] ? el("div", { class: "slots" }, wSlots.map(t => el("button", { type: "button", class: "slot", "aria-pressed": String(set.has(t)), onclick: () => { set.has(t) ? set.delete(t) : set.add(t); commit(); } }, tl(t)))) : null));
+  }
+  wk.append(wlist);
+  app.append(wk);
+
+  // Step 4: which meetings
+  const list4 = el("section", { class: "card" }, stepH(4, meetings.length > 1 ? "Which meetings could you come to?" : "The meeting"));
   if (!meetings.length) {
-    list3.append(el("p", { class: "hint" }, "No meetings are open for sign-up right now. Please check back soon."));
-    app.append(list3); renderSaveBar(); return;
-  }
-  if (meetings.length > 1) list3.append(el("p", { class: "hint" }, "Tap a meeting to add your availability. You can respond to as many as you like."));
-  list3.append(el("div", { class: "mlist" }, meetings.map(([mid, m]) => el("button", { type: "button", class: "mcard", "aria-pressed": String(mid === id),
-    onclick: () => { S.pEv = mid; S.monthOff = 0; render(); } },
-    el("span", { class: "mtitle" }, m.title, isBoardOnly(m) ? el("span", { class: "pill" }, "Board only") : null),
-    el("span", { class: "hint" }, `${tl(m.dayStart * 60)}–${tl(m.dayEnd * 60)}, ${m.tz || "Eastern Time"}${m.note ? " · " + m.note : ""}`),
-    responded(mid) ? el("span", { class: "done" }, "✓ You’ve added times") : null))));
-  app.append(list3);
-  const days = (mine.avail[id] ||= {});
-  const picked = Object.keys(days).filter(d => dayOk(ev, d)).sort();
+    list4.append(el("p", { class: "hint" }, "No meetings are open for sign-up right now. You can still fill in your usual week above and save."));
+    app.append(list4);
+  } else {
+    if (meetings.length > 1) list4.append(el("p", { class: "hint" }, "Tick every meeting you could attend. The days and times you pick below count for all the ones you tick."));
+    list4.append(el("div", { class: "mlist" }, meetings.map(([mid, m]) => {
+      const on = mine.picks.has(mid);
+      return el("button", { type: "button", class: "mcard", role: "checkbox", "aria-checked": String(on), "aria-pressed": String(on),
+        onclick: () => { on ? mine.picks.delete(mid) : mine.picks.add(mid); change(); } },
+        el("span", { class: "mtitle" }, el("span", { class: "tick", "aria-hidden": "true" }, on ? "✓" : ""), m.title, isBoardOnly(m) ? el("span", { class: "pill" }, "Board only") : null),
+        el("span", { class: "hint" }, `${tl(m.dayStart * 60)}–${tl(m.dayEnd * 60)}, ${m.tz || "Eastern Time"}${m.note ? " · " + m.note : ""}`));
+    })));
+    app.append(list4);
 
-  // Step 4: days
-  const months = el("div", { class: "months" });
-  const now = new Date();
-  for (let k = 0; k < 2; k++) {
-    const m = new Date(now.getFullYear(), now.getMonth() + S.monthOff + k, 1);
-    const g = el("div", { class: "g7" }, DOW.map(d => el("div", { class: "dow", "aria-hidden": "true" }, d.slice(0, 2))));
-    for (let i = 0; i < m.getDay(); i++) g.append(el("div"));
-    const last = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
-    for (let d = 1; d <= last; d++) {
-      const key = fmtD(new Date(m.getFullYear(), m.getMonth(), d)), ok = dayOk(ev, key), on = ok && key in days;
-      g.append(el("button", { type: "button", class: `day ${ok ? "in" : "out"} ${on ? "sel" : ""}`, disabled: !ok, "aria-pressed": ok ? String(on) : null, "aria-label": ok ? niceL(key) : null,
-        onclick: () => { if (key in days) delete days[key]; else days[key] = []; change(); } }, String(d)));
+    const chosen = meetings.filter(([mid]) => mine.picks.has(mid)).map(([, m]) => m);
+    if (!chosen.length) {
+      app.append(el("section", { class: "card" }, stepH(5, "Pick your days and times"), el("p", { class: "hint" }, "Tick at least one meeting above to pick specific days.")));
+    } else {
+      const win = { dayStart: Math.min(...chosen.map(m => m.dayStart)), dayEnd: Math.max(...chosen.map(m => m.dayEnd)) };
+      const slots = slotsOf(win);
+      const days = mine.work;
+      const picked = Object.keys(days).filter(d => d >= today()).sort();
+
+      // Step 5: days
+      const months = el("div", { class: "months" });
+      const now = new Date();
+      for (let k = 0; k < 2; k++) {
+        const m = new Date(now.getFullYear(), now.getMonth() + S.monthOff + k, 1);
+        const g = el("div", { class: "g7" }, DOW.map(d => el("div", { class: "dow", "aria-hidden": "true" }, d.slice(0, 2))));
+        for (let i = 0; i < m.getDay(); i++) g.append(el("div"));
+        const last = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
+        for (let d = 1; d <= last; d++) {
+          const key = fmtD(new Date(m.getFullYear(), m.getMonth(), d)), ok = key >= today(), on = ok && key in days;
+          g.append(el("button", { type: "button", class: `day ${ok ? "in" : "out"} ${on ? "sel" : ""}`, disabled: !ok, "aria-pressed": ok ? String(on) : null, "aria-label": ok ? niceL(key) : null,
+            onclick: () => {
+              if (key in days) delete days[key];
+              else days[key] = (weekly[parseD(key).getDay()] || []).filter(t => slots.includes(t)); // start from their usual week
+              change();
+            } }, String(d)));
+        }
+        months.append(el("div", { class: "month" }, el("h3", {}, `${MONL[m.getMonth()]} ${m.getFullYear()}`), g));
+      }
+      app.append(el("section", { class: "card" }, stepH(5, "Pick the days you could meet"),
+        el("p", { class: "hint" }, "Tap each day that might work. Tap it again to remove it. Use the arrows to see later months."),
+        el("div", { class: "row", style: "justify-content:space-between" },
+          el("button", { type: "button", class: "btn ghost sm", disabled: S.monthOff <= 0, onclick: () => { S.monthOff--; render(); } }, "← Earlier months"),
+          el("button", { type: "button", class: "btn ghost sm", onclick: () => { S.monthOff++; render(); } }, "Later months →")),
+        months,
+        picked.length ? el("p", { class: "sumline", style: "margin:0" }, `${picked.length} ${picked.length === 1 ? "day" : "days"} picked`) : null));
+
+      // Step 6: hours per day
+      const quick = [...BLOCKS, ["All day", 0, 24]];
+      const step6 = el("section", { class: "card" }, stepH(6, "Set your hours for each day"));
+      if (!picked.length) step6.append(el("p", { class: "hint" }, "Pick at least one day above, and it will show up here."));
+      else {
+        step6.append(el("p", { class: "hint" }, hasWeekly(mine) ? "We started each day with your usual week. Tap times to change them. Blue means free." : "Tap the times you’re free. Blue means free. Each day can have different hours."));
+        const list = el("div", { class: "daylist" });
+        picked.forEach((d, i) => {
+          const set = new Set(days[d]);
+          const toggleRange = (a, b) => { const r = slots.filter(t => t >= a * 60 && t < b * 60); const all = r.length && r.every(t => set.has(t)); r.forEach(t => all ? set.delete(t) : set.add(t)); days[d] = [...set].sort((x, y) => x - y); change(); };
+          list.append(el("div", { class: "dayblock" },
+            el("div", { class: "dayblock-h" }, el("h3", {}, niceL(d)), el("span", { class: "hint" }, set.size ? `Free ${hours(set.size)}` : "No times yet")),
+            el("div", { class: "quick" },
+              quick.map(([l, a, b]) => el("button", { type: "button", class: "btn ghost sm", onclick: () => toggleRange(a, b) }, l)),
+              set.size ? el("button", { type: "button", class: "btn ghost sm", onclick: () => { days[d] = []; change(); } }, "Clear") : null,
+              i > 0 ? el("button", { type: "button", class: "btn ghost sm", onclick: () => { days[d] = [...days[picked[i - 1]]]; change(); } }, "Same as day above") : null),
+            el("div", { class: "slots" }, slots.map(t => el("button", { type: "button", class: "slot", "aria-pressed": String(set.has(t)),
+              onclick: () => { set.has(t) ? set.delete(t) : set.add(t); days[d] = [...set].sort((x, y) => x - y); change(); } }, tl(t))))));
+        });
+        step6.append(list);
+      }
+      app.append(step6);
     }
-    months.append(el("div", { class: "month" }, el("h3", {}, `${MONL[m.getMonth()]} ${m.getFullYear()}`), g));
   }
-  app.append(el("section", { class: "card" }, stepH(4, meetings.length > 1 ? `Pick the days you could meet for “${ev.title}”` : "Pick the days you could meet"),
-    el("p", { class: "hint" }, "Tap each day that might work. Tap it again to remove it. Use the arrows to see later months."),
-    el("div", { class: "row", style: "justify-content:space-between" },
-      el("button", { type: "button", class: "btn ghost sm", disabled: S.monthOff <= 0, onclick: () => { S.monthOff--; render(); } }, "← Earlier months"),
-      el("button", { type: "button", class: "btn ghost sm", onclick: () => { S.monthOff++; render(); } }, "Later months →")),
-    months,
-    picked.length ? el("p", { class: "sumline", style: "margin:0" }, `${picked.length} ${picked.length === 1 ? "day" : "days"} picked`) : null));
-
-  // Step 5: hours per day
-  const slots = slotsOf(ev);
-  const quick = [["Morning", 8, 12], ["Afternoon", 12, 17], ["Evening", 17, 21], ["All day", 0, 24]];
-  const step4 = el("section", { class: "card" }, stepH(5, "Set your hours for each day"));
-  if (!picked.length) step4.append(el("p", { class: "hint" }, "Pick at least one day above, and it will show up here."));
-  else {
-    step4.append(el("p", { class: "hint" }, "Tap the times you’re free. Blue means free. Each day can have different hours."));
-    const list = el("div", { class: "daylist" });
-    picked.forEach((d, i) => {
-      const set = new Set(days[d]);
-      const toggleRange = (a, b) => { const r = slots.filter(t => t >= a * 60 && t < b * 60); const all = r.length && r.every(t => set.has(t)); r.forEach(t => all ? set.delete(t) : set.add(t)); days[d] = [...set].sort((x, y) => x - y); change(); };
-      list.append(el("div", { class: "dayblock" },
-        el("div", { class: "dayblock-h" }, el("h3", {}, niceL(d)), el("span", { class: "hint" }, set.size ? `Free ${hours(set.size)}` : "No times yet")),
-        el("div", { class: "quick" },
-          quick.map(([l, a, b]) => el("button", { type: "button", class: "btn ghost sm", onclick: () => toggleRange(a, b) }, l)),
-          set.size ? el("button", { type: "button", class: "btn ghost sm", onclick: () => { days[d] = []; change(); } }, "Clear") : null,
-          i > 0 ? el("button", { type: "button", class: "btn ghost sm", onclick: () => { days[d] = [...days[picked[i - 1]]]; change(); } }, "Same as day above") : null),
-        el("div", { class: "slots" }, slots.map(t => el("button", { type: "button", class: "slot", "aria-pressed": String(set.has(t)),
-          onclick: () => { set.has(t) ? set.delete(t) : set.add(t); days[d] = [...set].sort((x, y) => x - y); change(); } }, tl(t))))));
-    });
-    step4.append(list);
-  }
-  app.append(step4);
 
   // Note
   const noteIn = el("textarea", { id: "fNote", maxlength: "1000", rows: "3", placeholder: "Anything you’d like us to know: topics, questions, how you prefer to meet…" });
@@ -283,9 +332,16 @@ function renderSaveBar() {
 async function save() {
   const m = S.mine, uid = S.user?.uid; if (!uid) return;
   S.saving = true; renderSaveBar();
-  // keep only days with at least one time, for this meeting; keep other meetings untouched
+  // Meetings this person can see on the page: ticked ones get the shared calendar, unticked ones are cleared.
+  // Meetings they can't see (closed, board-only) keep whatever they had.
+  if (m.work) for (const [mid, ev] of visibleMeetings(m.role)) {
+    if (!m.picks.has(mid)) { delete m.avail[mid]; continue; }
+    const win = slotsOf(ev), o = {};
+    for (const [d, arr] of Object.entries(m.work)) { if (!dayOk(ev, d)) continue; const a = arr.filter(t => win.includes(t)); if (a.length) o[d] = a; }
+    m.avail[mid] = o;
+  }
   const avail = {};
-  for (const [evId, days] of Object.entries(m.avail)) { const o = {}; for (const [d, arr] of Object.entries(days)) if (arr.length) o[d] = arr; if (Object.keys(o).length) avail[evId] = o; }
+  for (const [key, days] of Object.entries(m.avail)) { const o = {}; for (const [d, arr] of Object.entries(days || {})) if (arr?.length) o[d] = arr; if (Object.keys(o).length) avail[key] = o; }
   try {
     await setDoc(doc(db, "responses", uid), { name: m.name.trim(), role: m.role, roleOther: m.roleOther.trim(), note: m.note.trim(), avail, updatedAt: serverTimestamp() });
     store.set("sastanak-name", m.name.trim());
@@ -327,12 +383,13 @@ async function googleIn() {
 }
 
 function meetingPicker() {
-  const ids = [...byNewest().map(([id]) => id), "general"];
-  if (!S.aEv || !evById(S.aEv)) S.aEv = ids[0];
-  const tag = id => { if (id === "general") return " (general calendar)"; const ev = S.events[id]; return [isOpen(id, ev) ? "" : " (closed)", isBoardOnly(ev) ? " (board only)" : ""].join(""); };
-  const sel = el("select", { id: "aEv", onchange: e => { S.aEv = e.target.value; S.cell = null; render(); } },
+  const ids = ["weekly", ...byNewest().map(([id]) => id), "general"];
+  // Until an admin picks something, follow the newest meeting (meetings may still be loading)
+  if (!S.aEvPicked || !evById(S.aEv)) S.aEv = byNewest()[0]?.[0] || "weekly";
+  const tag = id => { if (id === "general") return " (general calendar)"; if (id === "weekly") return ""; const ev = S.events[id]; return [isOpen(id, ev) ? "" : " (closed)", isBoardOnly(ev) ? " (board only)" : ""].join(""); };
+  const sel = el("select", { id: "aEv", onchange: e => { S.aEv = e.target.value; S.aEvPicked = true; S.cell = null; render(); } },
     ids.map(id => el("option", { value: id, selected: id === S.aEv }, `${evById(id).title}${tag(id)}`)));
-  return el("div", { class: "field" }, el("label", { class: "lbl", for: "aEv" }, "Meeting"), sel);
+  return el("div", { class: "field" }, el("label", { class: "lbl", for: "aEv" }, "Show results for"), sel);
 }
 
 function adminResults(app) {
@@ -342,26 +399,47 @@ function adminResults(app) {
     [["", "Everyone"], ...ROLES].map(([v, l]) => el("button", { class: "choice", role: "radio", style: "padding:6px 14px;font-size:16px", "aria-checked": String(S.roleFilter === v), onclick: () => { S.roleFilter = v; S.cell = null; render(); } }, l))));
   app.append(card);
 
-  const people = Object.entries(S.responses).filter(([, r]) => r.avail?.[evId] && Object.values(r.avail[evId]).some(a => a.length) && (!S.roleFilter || r.role === S.roleFilter));
+  const isWeek = evId === "weekly";
+  const roleOk = r => !S.roleFilter || r.role === S.roleFilter;
+  const datePeople = isWeek ? [] : Object.entries(S.responses).filter(([, r]) => r.avail?.[evId] && Object.values(r.avail[evId]).some(a => a.length) && roleOk(r));
+  const dateIds = new Set(datePeople.map(([id]) => id));
+  // People who only gave a usual week. Board-only meetings only count board members.
+  const weekPeople = (isWeek || S.inclWeekly) ? Object.entries(S.responses).filter(([id, r]) => !dateIds.has(id) && hasWeekly(r) && roleOk(r) && (isWeek || !isBoardOnly(ev) || r.role === "board")) : [];
+  const weekIds = new Set(weekPeople.map(([id]) => id));
+  const people = [...datePeople, ...weekPeople];
   const total = people.length;
   const nameOf = id => (S.responses[id]?.name || "").trim() || "Unnamed";
-  card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aPast", checked: S.showPast, onchange: e => { S.showPast = e.target.checked; S.cell = null; render(); } }), "Include past dates"));
-  if (!total) { app.append(el("div", { class: "empty" }, S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); const sc = setMeetingCard(evId, ev, [], {}, () => ""); if (sc) app.append(sc); return; }
+  const isFree = (id, d, t) => weekIds.has(id) ? (weeklyOf(S.responses[id])[isWeek ? d.slice(1) : parseD(d).getDay()] || []).includes(t) : (S.responses[id]?.avail?.[evId]?.[d] || []).includes(t);
+  if (!isWeek) {
+    card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aWeek", checked: S.inclWeekly, onchange: e => { S.inclWeekly = e.target.checked; S.cell = null; render(); } }), "Also count people’s usual week (for those who didn’t pick dates)"));
+    card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aPast", checked: S.showPast, onchange: e => { S.showPast = e.target.checked; S.cell = null; render(); } }), "Include past dates"));
+  } else card.append(el("p", { class: "hint" }, "Each person’s usual weekly availability, from the “Your usual week” step. Use it to pick good days before posting a meeting."));
+  if (!total) { app.append(el("div", { class: "empty" }, isWeek ? "No one has filled in their usual week yet." : S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); const sc = setMeetingCard(evId, ev, [], () => false, () => ""); if (sc) app.append(sc); return; }
 
+  let days;
+  if (isWeek) days = WEEK_ORDER.map(w => "w" + w);
+  else {
+    const set = new Set();
+    for (const [, r] of datePeople) Object.keys(r.avail[evId]).forEach(d => set.add(d));
+    if (weekPeople.length) for (let i = 0; i < 14; i++) { const x = new Date(); x.setDate(x.getDate() + i); const k = fmtD(x); if (dayOk(ev, k)) set.add(k); }
+    days = [...set].filter(d => S.showPast || d >= today()).sort();
+  }
   const map = {};
-  for (const [id, r] of people) for (const [d, arr] of Object.entries(r.avail[evId])) for (const t of arr) ((map[d] ||= {})[t] ||= []).push(id);
-  const days = Object.keys(map).filter(d => S.showPast || d >= today()).sort();
+  for (const d of days) for (const t of slotsOf(ev)) for (const [id] of people) if (isFree(id, d, t)) ((map[d] ||= {})[t] ||= []).push(id);
+  for (const d of days) map[d] ||= {};
+  const colHead = d => isWeek ? [DOW[+d.slice(1)]] : (x => [DOW[x.getDay()], el("br"), `${MON[x.getMonth()]} ${x.getDate()}`])(parseD(d));
+  const dayName = d => isWeek ? DOWL[+d.slice(1)] + "s" : nice(d);
   const slots = slotsOf(ev);
   const shade = n => n === 0 ? 0 : Math.max(1, Math.ceil(n / total * 4));
   const colors = ["--heat0", "--heat1", "--heat2", "--heat3", "--heat4"];
 
-  const heat = el("div", { class: "heat", style: `grid-template-columns:auto repeat(${days.length}, 48px)` }, el("div"));
-  days.forEach(d => { const x = parseD(d); heat.append(el("div", { class: "hh" }, DOW[x.getDay()], el("br"), `${MON[x.getMonth()]} ${x.getDate()}`)); });
+  const heat = el("div", { class: "heat", style: `grid-template-columns:auto repeat(${days.length}, ${isWeek ? 64 : 48}px)` }, el("div"));
+  days.forEach(d => heat.append(el("div", { class: "hh" }, colHead(d))));
   for (const t of slots) {
     heat.append(el("div", { class: "hl" }, t % 60 === 0 ? tl(t) : ""));
     for (const d of days) {
       const n = (map[d]?.[t] || []).length, k = `${d}|${t}`;
-      heat.append(el("button", { class: `hc ${S.cell === k ? "active" : ""}`, style: `background:var(${colors[shade(n)]})`, "aria-label": `${nice(d)} ${tl(t)}: ${n} of ${total} free`, onclick: () => { S.cell = k; S.draft = { ev: evId, date: d, start: t, end: t + 60, details: S.draft?.details || "" }; render(); } }));
+      heat.append(el("button", { class: `hc ${S.cell === k ? "active" : ""}`, style: `background:var(${colors[shade(n)]})${isWeek ? ";width:64px" : ""}`, "aria-label": `${dayName(d)} ${tl(t)}: ${n} of ${total} free`, onclick: () => { S.cell = k; if (!isWeek) S.draft = { ev: evId, date: d, start: t, end: t + 60, details: S.draft?.details || "" }; render(); } }));
     }
   }
 
@@ -369,27 +447,27 @@ function adminResults(app) {
   if (!S.cell) who.append(el("h3", {}, "Who’s free"), el("p", { class: "hint" }, "Tap any square to see names."));
   else {
     const [d, t] = S.cell.split("|"), ids = map[d]?.[+t] || [];
-    who.append(el("h3", {}, `${nice(d)}, ${tl(+t)}–${tl(+t + SLOT)}`), el("p", { style: "margin:0;font-weight:700" }, `${ids.length} of ${total} free`),
-      el("div", { class: "chips" }, people.map(([id, r]) => el("span", { class: `chip ${ids.includes(id) ? "yes" : "no"}`, title: roleText(r) }, nameOf(id)))));
+    who.append(el("h3", {}, `${dayName(d)}, ${tl(+t)}–${tl(+t + SLOT)}`), el("p", { style: "margin:0;font-weight:700" }, `${ids.length} of ${total} free`),
+      el("div", { class: "chips" }, people.map(([id, r]) => el("span", { class: `chip ${ids.includes(id) ? "yes" : "no"}`, title: roleText(r) }, nameOf(id), !isWeek && weekIds.has(id) ? " (usual week)" : ""))));
   }
 
   const runs = [];
   for (const d of days) { let i = 0; while (i < slots.length) { const n = (map[d][slots[i]] || []).length; if (!n) { i++; continue; } let j = i; while (j + 1 < slots.length && (map[d][slots[j + 1]] || []).length === n) j++; runs.push({ d, a: slots[i], b: slots[j] + SLOT, n }); i = j + 1; } }
   runs.sort((x, y) => y.n - x.n || (y.b - y.a) - (x.b - x.a));
   const best = el("div", { class: "card" }, el("h3", {}, "Best times"),
-    el("div", { class: "best" }, runs.slice(0, 6).map(r => el("button", { onclick: () => { S.cell = `${r.d}|${r.a}`; S.draft = { ev: evId, date: r.d, start: r.a, end: r.b, details: S.draft?.details || "" }; render(); } }, el("span", {}, `${nice(r.d)} · ${tl(r.a)}–${tl(r.b)}`), el("b", {}, `${r.n} of ${total}`)))));
+    el("div", { class: "best" }, runs.slice(0, 6).map(r => el("button", { onclick: () => { S.cell = `${r.d}|${r.a}`; if (!isWeek) S.draft = { ev: evId, date: r.d, start: r.a, end: r.b, details: S.draft?.details || "" }; render(); } }, el("span", {}, `${dayName(r.d)} · ${tl(r.a)}–${tl(r.b)}`), el("b", {}, `${r.n} of ${total}`)))));
 
   app.append(el("div", { class: "grid2" },
     el("div", { class: "card" }, el("div", { class: "legend" }, "Fewer", colors.map(c => el("i", { style: `background:var(${c})` })), "More people free"), el("div", { class: "heatwrap" }, heat)),
-    el("div", { style: "display:grid;gap:18px;align-content:start;min-width:0" }, who, best, setMeetingCard(evId, ev, people, map, nameOf))));
+    el("div", { style: "display:grid;gap:18px;align-content:start;min-width:0" }, who, best, setMeetingCard(evId, ev, people, isFree, nameOf))));
 
   const noted = people.filter(([, r]) => (r.note || "").trim());
   if (noted.length) app.append(el("section", { class: "card" }, el("h3", {}, "Notes"), noted.map(([id, r]) => el("blockquote", { class: "note" }, r.note.trim(), el("cite", {}, `${nameOf(id)} · ${roleText(r)}`)))));
 
-  app.append(el("section", { class: "card" }, el("h3", {}, `People who responded (${total})`),
+  app.append(el("section", { class: "card" }, el("h3", {}, isWeek ? `People who gave a usual week (${total})` : `People counted (${total})`),
     el("div", { class: "list" }, people.sort((a, b) => nameOf(a[0]).localeCompare(nameOf(b[0]))).map(([id, r]) => {
-      const nd = Object.values(r.avail[evId]).filter(a => a.length).length;
-      return el("div", { class: "li" }, el("div", {}, nameOf(id), el("small", {}, `${roleText(r)} · ${nd} ${nd === 1 ? "day" : "days"}`)), confirmBtn("Remove", "Tap again to remove", async () => { await deleteDoc(doc(db, "responses", id)); toast("Response removed"); }));
+      const nd = weekIds.has(id) ? 0 : Object.values(r.avail[evId]).filter(a => a.length).length;
+      return el("div", { class: "li" }, el("div", {}, nameOf(id), el("small", {}, `${roleText(r)} · ${weekIds.has(id) ? "usual week" : `${nd} ${nd === 1 ? "day" : "days"}`}`)), confirmBtn("Remove", "Tap again to remove", async () => { await deleteDoc(doc(db, "responses", id)); toast("Response removed"); }));
     }))));
 }
 
@@ -413,7 +491,7 @@ function adminMeetings(app) {
     const id = "m" + Date.now().toString(36);
     try {
       await setDoc(doc(db, "events", id), { title: v("mTitle").trim(), tz: v("mTz").trim() || "Eastern Time", note: v("mNote").trim(), dayStart: from, dayEnd: to, open: true, audience: S.newAud, managers: [], createdAt: Date.now(), createdBy: myEmail() });
-      S.aEv = id; S.aTab = "results"; S.newAud = "all"; toast("Meeting created and open for sign-up"); render();
+      S.aEv = id; S.aEvPicked = true; S.aTab = "results"; S.newAud = "all"; toast("Meeting created and open for sign-up"); render();
     } catch (err) { console.error(err); toast("Couldn’t create the meeting. Are you still signed in as an admin?"); }
   });
   app.append(f);
@@ -432,7 +510,7 @@ function adminMeetings(app) {
           el("small", {}, isSet(ev) ? `Set for ${setText(ev)}` : `${tl(ev.dayStart * 60)}–${tl(ev.dayEnd * 60)} each day${ev.createdAt ? ` · created ${new Date(ev.createdAt).toLocaleDateString()}` : ""}`),
           canManage(ev) ? managersBox(id, ev) : el("small", {}, `Managed by ${ev.createdBy || "the owner"}${(ev.managers || []).length ? " and co-managers" : ""}`)),
         el("div", { class: "row" },
-          el("button", { class: "btn sm ghost", onclick: () => { S.aEv = id; S.aTab = "results"; S.cell = null; window.scrollTo(0, 0); render(); } }, isSet(ev) ? "Results" : "Results & set time"),
+          el("button", { class: "btn sm ghost", onclick: () => { S.aEv = id; S.aEvPicked = true; S.aTab = "results"; S.cell = null; window.scrollTo(0, 0); render(); } }, isSet(ev) ? "Results" : "Results & set time"),
           canManage(ev) ? [
             el("button", { class: `btn sm ${open ? "ghost" : "gold"}`, onclick: () => patch(id, { open: !open }, open ? "Closed. It’s hidden from sign-up." : "Opened for sign-up") }, open ? "Close sign-up" : "Open sign-up"),
             audienceToggle(ev.audience === "board" ? "board" : "all", v => patch(id, { audience: v }, v === "board" ? "Now visible to BAMP board only" : "Now visible to everyone")),
@@ -440,8 +518,8 @@ function adminMeetings(app) {
     }))
       : el("p", { class: "hint" }, "No meetings yet. Until you create one, participants see a general calendar.")));
 }
-function setMeetingCard(evId, ev, people, map, nameOf) {
-  if (evId === "general") return null;
+function setMeetingCard(evId, ev, people, isFree, nameOf) {
+  if (evId === "general" || evId === "weekly") return null;
   const card = el("div", { class: "card setcard" }, el("h3", {}, "Set the meeting"));
   if (isSet(ev) && !(S.draft?.ev === evId && S.draft.editing)) {
     card.append(el("p", { style: "margin:0;font-weight:700" }, `✓ ${setText(ev)}`),
@@ -469,7 +547,7 @@ function setMeetingCard(evId, ev, people, map, nameOf) {
       el("div", { class: "field full" }, el("label", { class: "lbl", for: "cDet" }, "Details (optional)"), detIn)));
   if (dr.date && people.length) {
     const need = []; for (let t = dr.start; t < dr.end; t += SLOT) need.push(t);
-    const ok = people.filter(([id]) => need.every(t => (map[dr.date]?.[t] || []).includes(id)));
+    const ok = people.filter(([id]) => need.every(t => isFree(id, dr.date, t)));
     card.append(el("p", { style: "margin:0;font-weight:700" }, `${ok.length} of ${people.length} are free for the whole time`),
       ok.length ? el("div", { class: "chips" }, ok.map(([id]) => el("span", { class: "chip yes" }, nameOf(id)))) : null);
   }
