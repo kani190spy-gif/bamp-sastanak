@@ -71,6 +71,7 @@ const WEEK_EV = { title: "Everyone’s weekly availability", dayStart: 8, dayEnd
 const BLOCKS = [["Morning", 8, 12], ["Afternoon", 12, 17], ["Evening", 17, 21]];
 const weeklyOf = r => r?.avail?.weekly || {};
 const hasWeekly = r => Object.values(weeklyOf(r)).some(a => a?.length);
+const joinedOf = r => r?.avail?.joined || {};
 const isOpen = (id, ev) => typeof ev.open === "boolean" ? ev.open : id === legacyShownId();
 const isBoardOnly = ev => ev.audience === "board";
 const myEmail = () => (S.user?.email || "").toLowerCase();
@@ -166,7 +167,7 @@ function renderHome(app) {
   const mine = S.mine;
   const change = () => { S.dirty = true; render(); };
   const meetings = visibleMeetings(mine.role);
-  const responded = mid => Object.values(mine.avail[mid] || {}).some(a => a.length);
+  const responded = mid => !!joinedOf(mine)[mid] || Object.values(mine.avail[mid] || {}).some(a => a.length);
 
   app.append(el("p", { class: "welcome" }, "Welcome to ", el("b", {}, "BAMP Sastanak"), ", please pick the days you can meet, set hours of availability and we will try to match the best dates."));
 
@@ -338,13 +339,18 @@ async function save() {
   // Meetings this person can see on the page: ticked ones get the shared calendar, unticked ones are cleared.
   // Meetings they can't see (closed, board-only) keep whatever they had.
   if (m.work) for (const [mid, ev] of visibleMeetings(m.role)) {
-    if (!m.picks.has(mid)) { delete m.avail[mid]; continue; }
+    const joined = (m.avail.joined ||= {});
+    if (!m.picks.has(mid)) { delete m.avail[mid]; delete joined[mid]; continue; }
+    joined[mid] = true;
     const win = slotsOf(ev), o = {};
     for (const [d, arr] of Object.entries(m.work)) { if (!dayOk(ev, d)) continue; const a = arr.filter(t => win.includes(t)); if (a.length) o[d] = a; }
     m.avail[mid] = o;
   }
   const avail = {};
-  for (const [key, days] of Object.entries(m.avail)) { const o = {}; for (const [d, arr] of Object.entries(days || {})) if (arr?.length) o[d] = arr; if (Object.keys(o).length) avail[key] = o; }
+  for (const [key, days] of Object.entries(m.avail)) {
+    if (key === "joined") { const j = {}; for (const [mid, on] of Object.entries(days || {})) if (on === true) j[mid] = true; if (Object.keys(j).length) avail.joined = j; continue; }
+    const o = {}; for (const [d, arr] of Object.entries(days || {})) if (arr?.length) o[d] = arr; if (Object.keys(o).length) avail[key] = o;
+  }
   try {
     await setDoc(doc(db, "responses", uid), { name: m.name.trim(), role: m.role, roleOther: m.roleOther.trim(), note: m.note.trim(), avail, updatedAt: serverTimestamp() });
     store.set("sastanak-name", m.name.trim());
@@ -406,15 +412,15 @@ function adminResults(app) {
   const roleOk = r => !S.roleFilter || r.role === S.roleFilter;
   const datePeople = isWeek ? [] : Object.entries(S.responses).filter(([, r]) => r.avail?.[evId] && Object.values(r.avail[evId]).some(a => a.length) && roleOk(r));
   const dateIds = new Set(datePeople.map(([id]) => id));
-  // People who only gave a usual week. Board-only meetings only count board members.
-  const weekPeople = (isWeek || S.inclWeekly) ? Object.entries(S.responses).filter(([id, r]) => !dateIds.has(id) && hasWeekly(r) && roleOk(r) && (isWeek || !isBoardOnly(ev) || r.role === "board")) : [];
+  // People who ticked this meeting without picking dates: use their weekly availability instead.
+  const weekPeople = (isWeek || S.inclWeekly) ? Object.entries(S.responses).filter(([id, r]) => !dateIds.has(id) && hasWeekly(r) && roleOk(r) && (isWeek || joinedOf(r)[evId])) : [];
   const weekIds = new Set(weekPeople.map(([id]) => id));
   const people = [...datePeople, ...weekPeople];
   const total = people.length;
   const nameOf = id => (S.responses[id]?.name || "").trim() || "Unnamed";
   const isFree = (id, d, t) => weekIds.has(id) ? (weeklyOf(S.responses[id])[isWeek ? d.slice(1) : parseD(d).getDay()] || []).includes(t) : (S.responses[id]?.avail?.[evId]?.[d] || []).includes(t);
   if (!isWeek) {
-    card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aWeek", checked: S.inclWeekly, onchange: e => { S.inclWeekly = e.target.checked; S.cell = null; render(); } }), "Also count people’s weekly availability (for those who didn’t pick dates)"));
+    card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aWeek", checked: S.inclWeekly, onchange: e => { S.inclWeekly = e.target.checked; S.cell = null; render(); } }), "Also count weekly availability for people who ticked this meeting but didn’t pick dates"));
     card.append(el("label", { class: "row", style: "gap:8px;font-size:16px" }, el("input", { type: "checkbox", id: "aPast", checked: S.showPast, onchange: e => { S.showPast = e.target.checked; S.cell = null; render(); } }), "Include past dates"));
   } else card.append(el("p", { class: "hint" }, "Each person’s usual weekly availability, from the “Consistent weekly availability” step. Use it to pick good days before posting a meeting."));
   if (!total) { app.append(el("div", { class: "empty" }, isWeek ? "No one has filled in their weekly availability yet." : S.roleFilter ? "No one in this group has responded to this meeting yet." : "No responses for this meeting yet. Share the sign-up link and they’ll appear here as people save.")); const sc = setMeetingCard(evId, ev, [], () => false, () => ""); if (sc) app.append(sc); return; }
