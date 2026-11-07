@@ -1,6 +1,6 @@
 # BAMP Sastanak
 
-Private scheduling page for Bosnian American Medical Professionals (BAMP), BAPA and friends.
+Private scheduling page for Bosnian American Medical Professionals (BAMP) and friends.
 Participants pick days and set hours for each day; admins see the combined results.
 
 - Sign-up page: the site's main address

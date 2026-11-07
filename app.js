@@ -1,4 +1,4 @@
-// BAMP Sastanak: group availability for BAMP, BAPA and friends.
+// BAMP Sastanak: group availability for BAMP meetings.
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInAnonymously, signInWithPopup, GoogleAuthProvider, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -192,7 +192,7 @@ function renderHome(app) {
   app.append(el("section", { class: "card" }, stepH(1, "Your name"), nameIn));
 
   // Step 2: group
-  const otherIn = el("input", { type: "text", id: "fOther", maxlength: "80", placeholder: "For example: BAPA member, family, friend of BAMP", value: mine.roleOther });
+  const otherIn = el("input", { type: "text", id: "fOther", maxlength: "80", placeholder: "For example: family, friend of BAMP, community member", value: mine.roleOther });
   otherIn.addEventListener("input", () => { mine.roleOther = otherIn.value; S.dirty = true; renderSaveBar(); });
   app.append(el("section", { class: "card" }, stepH(2, "Which describes you?"),
     el("div", { class: "choices", role: "radiogroup", "aria-label": "Which describes you?" },
@@ -479,7 +479,7 @@ function adminMeetings(app) {
   const f = el("form", { class: "card" },
     el("h2", { style: "font-size:22px" }, "New meeting"),
     el("div", { class: "form2" },
-      el("div", { class: "field full" }, el("label", { class: "lbl", for: "mTitle" }, "Meeting name"), el("input", { type: "text", id: "mTitle", required: true, maxlength: "100", placeholder: "What is it? e.g. BAPA health talk, board meeting" })),
+      el("div", { class: "field full" }, el("label", { class: "lbl", for: "mTitle" }, "Meeting name"), el("input", { type: "text", id: "mTitle", required: true, maxlength: "100", placeholder: "What is it? e.g. health talk, board meeting" })),
       el("div", { class: "field full" }, el("label", { class: "lbl", for: "mTz" }, "Time zone shown"), el("input", { type: "text", id: "mTz", value: "Eastern Time", maxlength: "40" })),
       el("div", { class: "field" }, el("label", { class: "lbl", for: "mFrom" }, "Earliest time"), el("select", { id: "mFrom" }, hourOpts(9))),
       el("div", { class: "field" }, el("label", { class: "lbl", for: "mTo" }, "Latest time"), el("select", { id: "mTo" }, hourOpts(21))),
